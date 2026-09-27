@@ -38,3 +38,5 @@ class InterviewTurn(Base, UUIDPk, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
     )
     rubric_evaluation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    answer_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    transcript_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

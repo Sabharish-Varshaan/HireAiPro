@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,12 +10,19 @@ from app.models.base import TimestampMixin, UUIDPk
 
 class LearningResource(Base, UUIDPk, TimestampMixin):
     __tablename__ = "learning_resources"
+    __table_args__ = (UniqueConstraint("url", "skill_id", name="uq_resource_url_skill"),)
 
     title: Mapped[str] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
     resource_type: Mapped[str] = mapped_column(String, default="article")
     skill_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("skills.id"), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    difficulty: Mapped[str] = mapped_column(String, default="beginner")
+    estimated_duration: Mapped[str | None] = mapped_column(String, nullable=True)
+    prerequisites: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    is_free: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
 
 
 class LearningPath(Base, UUIDPk, TimestampMixin):
@@ -43,4 +50,5 @@ class LearningPathStep(Base, UUIDPk, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("learning_resources.id"), nullable=True
     )
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resource_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     completed: Mapped[bool] = mapped_column(default=False)

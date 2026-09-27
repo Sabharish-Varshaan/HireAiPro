@@ -41,7 +41,60 @@ PREREQUISITES: list[tuple[str, str]] = [
     ("Authentication & Authorization", "JWT"),
 ]
 
+PREREQUISITES += [
+    ("Python", "Pydantic"), ("Pydantic", "FastAPI"), ("REST APIs", "FastAPI"), ("HTTP", "REST APIs"),
+    ("TCP/IP", "HTTP"), ("Java", "Spring Boot"), ("Spring Boot", "Spring Security"), ("Spring Boot", "Spring Data JPA"),
+    ("SQL", "SQL Window Functions"), ("SQL", "Query Optimization"), ("Database Indexing", "Query Optimization"),
+    ("SQL", "Transactions & Isolation Levels"), ("PostgreSQL", "pgvector"), ("Docker", "Docker Compose"),
+    ("Kubernetes", "Helm"), ("Kubernetes", "AWS EKS"), ("Kubernetes", "Istio"), ("Git", "Git Branching Strategies"),
+    ("Git", "CI/CD"), ("CI/CD", "GitOps"), ("Kubernetes", "Argo CD"), ("Linux Administration", "systemd"),
+    ("Unix Command Line", "Linux Administration"), ("Unix Command Line", "Shell Scripting"),
+    ("Hash Tables", "Data Structures"), ("Linked Lists", "Data Structures"), ("Stacks & Queues", "Data Structures"),
+    ("Tree Data Structures", "Graph Algorithms"), ("Recursion", "Backtracking"), ("Recursion", "Dynamic Programming"),
+    ("Sorting Algorithms", "Binary Search"), ("Time & Space Complexity", "Algorithms"), ("Algorithms", "System Design"),
+    ("Distributed Systems", "System Design"), ("NumPy", "Pandas"), ("Pandas", "Exploratory Data Analysis"),
+    ("Statistical Analysis", "Machine Learning"), ("Linear Algebra", "Machine Learning"), ("Probability", "Statistical Analysis"),
+    ("Calculus", "Gradient Descent"), ("Gradient Descent", "Deep Learning"), ("NumPy", "PyTorch"), ("NumPy", "TensorFlow"),
+    ("Deep Learning", "PyTorch"), ("Deep Learning", "Convolutional Neural Networks"), ("Deep Learning", "Attention Mechanisms"),
+    ("Attention Mechanisms", "Large Language Models"), ("Large Language Models", "Fine-Tuning LLMs"),
+    ("Vector Embeddings", "Semantic Search"), ("Semantic Search", "Retrieval-Augmented Generation"),
+    ("Machine Learning", "Scikit-learn"), ("Machine Learning", "Model Evaluation"), ("Machine Learning", "MLOps"),
+    ("SQL", "Data Modeling"), ("Python", "PySpark"), ("Apache Spark", "PySpark"), ("Data Pipelines", "Apache Airflow"),
+    ("SQL", "dbt"), ("JavaScript", "Node.js"), ("TypeScript", "NestJS"), ("Node.js", "NestJS"), ("React", "React Router"),
+    ("React", "Redux"), ("HTML", "CSS"), ("CSS", "Tailwind CSS"), ("HTML", "JavaScript"), ("JavaScript", "Vue.js"),
+    ("TypeScript", "Angular"), ("Authentication & Authorization", "OAuth 2.0"), ("OAuth 2.0", "OpenID Connect"),
+    ("Application Security", "Threat Modeling"), ("Networking Fundamentals", "TLS/SSL"), ("Cryptography Basics", "TLS/SSL"),
+    ("Unit Testing", "Integration Testing"), ("Unit Testing", "Test-Driven Development"), ("Python", "PyTest"),
+    ("JavaScript", "Jest"), ("Java", "JUnit"), ("AWS", "AWS S3"), ("AWS", "AWS EC2"), ("AWS", "AWS IAM"),
+    ("AWS", "Serverless (Lambda)"), ("Object-Oriented Programming", "Java"),
+    ("Microservices Architecture", "Service Mesh"), ("Message Queues", "Event-Driven Architecture"),
+    ("Event-Driven Architecture", "Event Sourcing"), ("Design Patterns", "Clean Architecture"),
+]
+
+PARENT: list[tuple[str, str]] = [
+    ("AWS", "AWS S3"), ("AWS", "AWS EC2"), ("AWS", "AWS IAM"), ("AWS", "AWS RDS"), ("AWS", "AWS ECS"),
+    ("AWS", "AWS EKS"), ("AWS", "Amazon CloudFront"), ("AWS", "AWS CloudFormation"), ("AWS", "Amazon Redshift"),
+    ("Azure", "Azure DevOps"), ("Azure", "Azure Functions"), ("Google Cloud Platform", "Google Kubernetes Engine"),
+    ("Google Cloud Platform", "BigQuery"), ("Google Cloud Platform", "Google Cloud Run"),
+    ("Data Structures", "Hash Tables"), ("Data Structures", "Linked Lists"), ("Data Structures", "Tree Data Structures"),
+    ("Data Structures", "Stacks & Queues"), ("Algorithms", "Sorting Algorithms"), ("Algorithms", "Graph Algorithms"),
+    ("Algorithms", "Dynamic Programming"), ("Algorithms", "Greedy Algorithms"), ("Algorithms", "Binary Search"),
+    ("Machine Learning", "Deep Learning"), ("Deep Learning", "Convolutional Neural Networks"),
+    ("Deep Learning", "Recurrent Neural Networks"), ("Natural Language Processing", "Named Entity Recognition"),
+    ("Natural Language Processing", "Sentiment Analysis"), ("Natural Language Processing", "Text Classification"),
+    ("Computer Vision", "Object Detection"), ("Computer Vision", "Image Segmentation"),
+    ("Monitoring & Observability", "OpenTelemetry"), ("Monitoring & Observability", "Prometheus"),
+    ("Monitoring & Observability", "Grafana"), ("Application Security", "OWASP Top 10"),
+    ("SQL", "SQL Window Functions"), ("Spring Boot", "Spring Security"),
+]
+
 RELATED: list[tuple[str, str]] = [
+    ("Playwright", "Cypress"), ("Playwright", "Selenium"), ("Vitest", "Jest"), ("Terraform", "Pulumi"),
+    ("MySQL", "MariaDB"), ("PostgreSQL", "MySQL"), ("Redis", "Memcached"), ("Kafka", "RabbitMQ"),
+    ("Apache Kafka", "RabbitMQ"), ("Qdrant", "Pinecone"), ("Qdrant", "Milvus"), ("pgvector", "Vector Databases"),
+    ("Qdrant", "Vector Databases"), ("LangChain", "LlamaIndex"), ("Tableau", "Power BI"), ("Pandas", "Polars"),
+    ("Apache Airflow", "Dagster"), ("Apache Airflow", "Prefect"), ("React Native", "Flutter"),
+    ("Snowflake", "BigQuery"), ("Docker", "Podman"), ("Argo CD", "GitOps"), ("Datadog", "Grafana"),
     ("React", "Redux"),
     ("Vue.js", "Nuxt.js"),
     ("FastAPI", "REST APIs"),
@@ -67,6 +120,9 @@ async def seed_skills() -> dict:
 
         name_to_skill: dict[str, Skill] = dict(existing)
 
+        canonical_norms = {_norm(n) for items in TAXONOMY.values() for n, _ in items}
+        global_alias_norms = {a.alias_normalized for a in (await db.scalars(select(SkillAlias))).all()}
+
         for category, items in TAXONOMY.items():
             for canonical_name, aliases in items:
                 skill = name_to_skill.get(canonical_name)
@@ -77,22 +133,14 @@ async def seed_skills() -> dict:
                     name_to_skill[canonical_name] = skill
                     created_skills += 1
 
-                existing_alias_norms = {
-                    a.alias_normalized
-                    for a in (
-                        await db.scalars(
-                            select(SkillAlias).where(SkillAlias.skill_id == skill.id)
-                        )
-                    ).all()
-                }
                 for alias in aliases:
                     norm = _norm(alias)
-                    if norm and norm not in existing_alias_norms:
-                        db.add(
-                            SkillAlias(skill_id=skill.id, alias=alias, alias_normalized=norm)
-                        )
-                        existing_alias_norms.add(norm)
-                        created_aliases += 1
+                    # an alias may never shadow another canonical name or an alias already taken
+                    if not norm or norm in global_alias_norms or norm in canonical_norms:
+                        continue
+                    db.add(SkillAlias(skill_id=skill.id, alias=alias, alias_normalized=norm))
+                    global_alias_norms.add(norm)
+                    created_aliases += 1
 
         await db.flush()
 
@@ -119,6 +167,8 @@ async def seed_skills() -> dict:
             add_rel(a, b, SkillRelationType.PREREQUISITE_OF)
         for a, b in RELATED:
             add_rel(a, b, SkillRelationType.RELATED_TO)
+        for a, b in PARENT:
+            add_rel(a, b, SkillRelationType.PARENT_OF)
 
         await db.commit()
 

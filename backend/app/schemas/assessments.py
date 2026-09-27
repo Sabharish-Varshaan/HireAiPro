@@ -1,9 +1,9 @@
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import AssessmentAttemptStatus
-from app.schemas.questions import QuestionStudentOut
+from app.schemas.questions import QuestionOut, QuestionStudentOut
 
 
 class GenerateAssessmentRequest(BaseModel):
@@ -17,14 +17,13 @@ class AssessmentOut(BaseModel):
     status: str
     total_duration_minutes: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AssessmentQuestionOut(BaseModel):
     id: uuid.UUID
     order_index: int
-    question: QuestionStudentOut
+    question: QuestionOut | QuestionStudentOut
 
 
 class AssessmentSectionOut(BaseModel):
@@ -36,6 +35,7 @@ class AssessmentSectionOut(BaseModel):
 
 class AssessmentDetailOut(AssessmentOut):
     sections: list[AssessmentSectionOut] = []
+    plan: dict | None = None
 
 
 class StartAttemptRequest(BaseModel):
@@ -48,8 +48,7 @@ class AttemptOut(BaseModel):
     status: AssessmentAttemptStatus
     total_score: float | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SubmitAnswerRequest(BaseModel):

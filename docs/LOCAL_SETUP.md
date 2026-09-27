@@ -35,7 +35,7 @@ python3.12 -m venv .venv
 cp ../.env.example .env   # adjust ports if you changed docker-compose.yml
 .venv/bin/alembic upgrade head
 .venv/bin/python -m app.services.skills.seed     # seeds the skill taxonomy
-.venv/bin/uvicorn app.main:app --port 8010 --reload
+.venv/bin/uvicorn app.main:app --port 8020 --reload
 ```
 
 ## 4. Celery worker
@@ -54,7 +54,7 @@ works fine.
 ```bash
 cd frontend
 npm install
-npm run dev   # http://localhost:5173, proxies /api to :8010
+npm run dev   # http://localhost:5173, proxies /api to :8020
 ```
 
 ## 6. Judge0

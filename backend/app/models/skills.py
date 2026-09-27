@@ -15,6 +15,7 @@ class Skill(Base, UUIDPk, TimestampMixin):
     canonical_name: Mapped[str] = mapped_column(String, unique=True, index=True)
     category: Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
 
 
 class SkillAlias(Base, UUIDPk, TimestampMixin):

@@ -1,7 +1,7 @@
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import JobStatus, RequirementType
 
@@ -23,9 +23,9 @@ class JobSkillOut(BaseModel):
     evidence_text: str | None
     extraction_confidence: float
     confirmed: bool
+    canonical_name: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobOut(BaseModel):
@@ -37,12 +37,12 @@ class JobOut(BaseModel):
     location: str | None
     employment_type: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobWithSkillsOut(JobOut):
     skills: list[JobSkillOut] = []
+    organization_name: str | None = None
 
 
 class JobSkillUpdate(BaseModel):

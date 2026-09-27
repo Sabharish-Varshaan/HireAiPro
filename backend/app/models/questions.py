@@ -52,6 +52,11 @@ class Question(Base, UUIDPk, TimestampMixin):
 
     status: Mapped[QuestionStatus] = mapped_column(String, default=QuestionStatus.DRAFT)
     model_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    source_refs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    validation_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    generation_key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
 
 class QuestionSkill(Base, UUIDPk, TimestampMixin):

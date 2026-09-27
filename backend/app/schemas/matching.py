@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class MatchOut(BaseModel):
@@ -17,6 +17,6 @@ class MatchOut(BaseModel):
     partial_skills: list | None
     missing_skills: list | None
     matching_version: str
+    weights: dict | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

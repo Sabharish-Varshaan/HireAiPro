@@ -1,153 +1,306 @@
+import re
 import uuid
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_roles
 from app.core.database import get_db
-from app.models.enums import ProcessingStatus, UserRole
-from app.models.misc import AgentRun, AIRun, AuditEvent
-from app.models.organizations import Organization
+from app.models.enums import SkillRelationType, UserRole
 from app.models.institutions import Institution
+from app.models.knowledge import KnowledgeSource
+from app.models.misc import AgentRun, AIRun, AuditEvent, ProcessingJob
+from app.models.organizations import Organization
 from app.models.questions import Question
 from app.models.skills import Skill, SkillAlias, SkillRelationship
 from app.models.users import User
+from app.services.audit import audit
+from app.workers.jobs import upsert_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-ADMIN_ONLY = (UserRole.PLATFORM_ADMIN,)
-
-
-@router.get("/users", response_model=list[dict])
-async def list_users(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(User))).all()
-    return [{"id": u.id, "email": u.email, "role": u.role, "full_name": u.full_name, "is_active": u.is_active} for u in rows]
+ADMIN = require_roles(UserRole.PLATFORM_ADMIN)
 
 
-@router.get("/organizations", response_model=list[dict])
-async def list_organizations(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(Organization))).all()
-    return [{"id": o.id, "name": o.name} for o in rows]
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
-@router.get("/institutions", response_model=list[dict])
-async def list_institutions(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(Institution))).all()
-    return [{"id": i.id, "name": i.name} for i in rows]
+class SkillIn(BaseModel):
+    canonical_name: str
+    category: str
+    description: str | None = None
 
 
-@router.post("/knowledge/ingest")
-async def ingest_knowledge(
-    skill_id: uuid.UUID,
-    source_name: str,
-    text: str,
-    user: User = Depends(require_roles(*ADMIN_ONLY)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Admin-approved knowledge ingestion — never autonomous crawling."""
-    from app.agents.knowledge_agent import ingest_knowledge_source
+class SkillPatch(BaseModel):
+    canonical_name: str | None = None
+    category: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
 
-    package = await ingest_knowledge_source(db, skill_id, source_name, text)
+
+class AliasIn(BaseModel):
+    alias: str
+
+
+class RelationshipIn(BaseModel):
+    to_skill_id: uuid.UUID
+    relation_type: SkillRelationType
+
+
+@router.get("/stats")
+async def stats(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    async def count(model, *where):
+        return await db.scalar(select(func.count()).select_from(model).where(*where)) or 0
+
     return {
-        "skill_id": package.skill_id,
-        "source_id": package.source_id,
-        "chunks_created": package.chunks_created,
-        "status": package.status,
+        "users": await count(User), "organizations": await count(Organization), "institutions": await count(Institution),
+        "skills": await count(Skill, Skill.is_active.is_(True)), "aliases": await count(SkillAlias),
+        "questions": await count(Question), "questions_awaiting_review": await count(Question, Question.status.in_(["DRAFT", "VALIDATED"])),
+        "knowledge_sources": await count(KnowledgeSource), "knowledge_failed": await count(KnowledgeSource, KnowledgeSource.status == "FAILED"),
+        "ai_runs": await count(AIRun), "ai_runs_failed": await count(AIRun, AIRun.status == "FAILED"),
+        "agent_runs": await count(AgentRun), "agent_runs_fallback": await count(AgentRun, AgentRun.used_fallback.is_(True)),
+        "failed_jobs": await count(ProcessingJob, ProcessingJob.status == "FAILED"),
     }
 
 
-@router.get("/skills", response_model=list[dict])
-async def list_skills(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(Skill))).all()
-    return [{"id": s.id, "canonical_name": s.canonical_name, "category": s.category} for s in rows]
+@router.get("/users")
+async def list_users(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    rows = (await db.scalars(select(User).order_by(User.created_at.desc()))).all()
+    return [{"id": u.id, "email": u.email, "role": u.role, "full_name": u.full_name, "is_active": u.is_active,
+             "created_at": u.created_at} for u in rows]
+
+
+@router.get("/organizations")
+async def list_organizations(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    return [{"id": o.id, "name": o.name, "industry": o.industry, "created_at": o.created_at}
+            for o in (await db.scalars(select(Organization))).all()]
+
+
+@router.get("/institutions")
+async def list_institutions(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    return [{"id": i.id, "name": i.name, "created_at": i.created_at} for i in (await db.scalars(select(Institution))).all()]
+
+
+# ---- taxonomy ---------------------------------------------------------------
+
+@router.get("/skills")
+async def list_skills(q: str | None = None, category: str | None = None, include_inactive: bool = False, limit: int = 100,
+                      offset: int = 0, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    stmt = select(Skill)
+    if q:
+        alias_hits = select(SkillAlias.skill_id).where(SkillAlias.alias_normalized.contains(_norm(q)))
+        stmt = stmt.where(or_(Skill.canonical_name.ilike(f"%{q}%"), Skill.id.in_(alias_hits)))
+    if category:
+        stmt = stmt.where(Skill.category == category)
+    if not include_inactive:
+        stmt = stmt.where(Skill.is_active.is_(True))
+    total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = (await db.scalars(stmt.order_by(Skill.canonical_name).offset(offset).limit(limit))).all()
+    aliases = {}
+    for a in (await db.scalars(select(SkillAlias).where(SkillAlias.skill_id.in_([r.id for r in rows])))).all():
+        aliases.setdefault(a.skill_id, []).append({"id": a.id, "alias": a.alias})
+    return {"total": total, "items": [
+        {"id": s.id, "canonical_name": s.canonical_name, "category": s.category, "description": s.description,
+         "is_active": s.is_active, "aliases": aliases.get(s.id, [])} for s in rows]}
+
+
+@router.get("/skills/{skill_id}")
+async def skill_detail(skill_id: uuid.UUID, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    s = await db.get(Skill, skill_id)
+    if s is None:
+        raise HTTPException(404, "Skill not found")
+    rels = (await db.scalars(select(SkillRelationship).where(
+        or_(SkillRelationship.from_skill_id == skill_id, SkillRelationship.to_skill_id == skill_id)))).all()
+    names = {x.id: x.canonical_name for x in (await db.scalars(select(Skill).where(
+        Skill.id.in_({r.from_skill_id for r in rels} | {r.to_skill_id for r in rels})))).all()}
+    aliases = (await db.scalars(select(SkillAlias).where(SkillAlias.skill_id == skill_id))).all()
+    return {
+        "id": s.id, "canonical_name": s.canonical_name, "category": s.category, "description": s.description,
+        "is_active": s.is_active, "aliases": [{"id": a.id, "alias": a.alias} for a in aliases],
+        "relationships": [{"id": r.id, "from": names.get(r.from_skill_id), "from_skill_id": r.from_skill_id,
+                           "to": names.get(r.to_skill_id), "to_skill_id": r.to_skill_id, "type": r.relation_type} for r in rels],
+    }
 
 
 @router.post("/skills")
-async def create_skill(
-    canonical_name: str,
-    category: str,
-    user: User = Depends(require_roles(*ADMIN_ONLY)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Admin-only permanent taxonomy mutation — the one path the AI is never
-    allowed to reach directly."""
-    skill = Skill(canonical_name=canonical_name, category=category)
-    db.add(skill)
+async def create_skill(payload: SkillIn, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    """The only path that creates a permanent canonical skill — never reachable by AI code."""
+    if await db.scalar(select(SkillAlias.id).where(SkillAlias.alias_normalized == _norm(payload.canonical_name))):
+        raise HTTPException(409, "That name is already an alias of an existing skill")
+    s = Skill(**payload.model_dump())
+    db.add(s)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(409, "Skill already exists") from exc
+    await audit(db, user, "taxonomy_skill_created", "skill", s.id, metadata=payload.model_dump())
     await db.commit()
-    await db.refresh(skill)
-    return {"id": skill.id}
+    return {"id": s.id}
+
+
+@router.patch("/skills/{skill_id}")
+async def update_skill(skill_id: uuid.UUID, payload: SkillPatch, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    s = await db.get(Skill, skill_id)
+    if s is None:
+        raise HTTPException(404, "Skill not found")
+    changes = payload.model_dump(exclude_unset=True)
+    for k, v in changes.items():
+        setattr(s, k, v)
+    await audit(db, user, "taxonomy_skill_deactivated" if changes.get("is_active") is False else "taxonomy_skill_updated",
+                "skill", s.id, metadata=changes)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        raise HTTPException(409, "Another skill already has that name") from exc
+    return {"id": s.id, **changes}
 
 
 @router.post("/skills/{skill_id}/aliases")
-async def add_alias(
-    skill_id: uuid.UUID,
-    alias: str,
-    user: User = Depends(require_roles(*ADMIN_ONLY)),
-    db: AsyncSession = Depends(get_db),
-):
-    import re
-
-    row = SkillAlias(skill_id=skill_id, alias=alias, alias_normalized=re.sub(r"[^a-z0-9]+", "", alias.lower()))
+async def add_alias(skill_id: uuid.UUID, payload: AliasIn, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    norm = _norm(payload.alias)
+    if not norm:
+        raise HTTPException(422, "Alias is empty")
+    clash = await db.scalar(select(Skill.id).where(func.regexp_replace(func.lower(Skill.canonical_name), "[^a-z0-9]+", "", "g") == norm))
+    if clash and clash != skill_id:
+        raise HTTPException(409, "Alias would shadow another canonical skill")
+    row = SkillAlias(skill_id=skill_id, alias=payload.alias, alias_normalized=norm)
     db.add(row)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(409, "Alias already in use") from exc
+    await audit(db, user, "taxonomy_alias_added", "skill", skill_id, metadata={"alias": payload.alias})
     await db.commit()
     return {"id": row.id}
 
 
-@router.get("/questions/ai-generated", response_model=list[dict])
-async def ai_generated_questions(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    from app.models.enums import QuestionSourceType
+@router.delete("/aliases/{alias_id}")
+async def delete_alias(alias_id: uuid.UUID, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    row = await db.get(SkillAlias, alias_id)
+    if row is None:
+        raise HTTPException(404, "Alias not found")
+    await db.delete(row)
+    await audit(db, user, "taxonomy_alias_removed", "skill", row.skill_id, metadata={"alias": row.alias})
+    await db.commit()
+    return {"deleted": True}
 
-    rows = (
-        await db.scalars(select(Question).where(Question.source_type == QuestionSourceType.AI_GENERATED))
-    ).all()
-    return [{"id": q.id, "question_text": q.question_text, "status": q.status, "skill_id": q.skill_id} for q in rows]
+
+@router.post("/skills/{skill_id}/relationships")
+async def add_relationship(skill_id: uuid.UUID, payload: RelationshipIn, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    if skill_id == payload.to_skill_id:
+        raise HTTPException(422, "A skill can't relate to itself")
+    if await db.get(Skill, payload.to_skill_id) is None:
+        raise HTTPException(404, "Target skill not found")
+    exists = await db.scalar(select(SkillRelationship.id).where(
+        SkillRelationship.from_skill_id == skill_id, SkillRelationship.to_skill_id == payload.to_skill_id,
+        SkillRelationship.relation_type == payload.relation_type.value))
+    if exists:
+        return {"id": exists}
+    row = SkillRelationship(from_skill_id=skill_id, to_skill_id=payload.to_skill_id, relation_type=payload.relation_type)
+    db.add(row)
+    await db.flush()
+    await audit(db, user, "taxonomy_relationship_added", "skill", skill_id,
+                metadata={"to": str(payload.to_skill_id), "type": payload.relation_type.value})
+    await db.commit()
+    return {"id": row.id}
 
 
-@router.get("/ai-runs", response_model=list[dict])
-async def list_ai_runs(
-    status: ProcessingStatus | None = None,
-    user: User = Depends(require_roles(*ADMIN_ONLY)),
-    db: AsyncSession = Depends(get_db),
-):
-    stmt = select(AIRun).order_by(AIRun.created_at.desc()).limit(200)
+@router.delete("/relationships/{rel_id}")
+async def delete_relationship(rel_id: uuid.UUID, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    row = await db.get(SkillRelationship, rel_id)
+    if row is None:
+        raise HTTPException(404, "Relationship not found")
+    await db.delete(row)
+    await audit(db, user, "taxonomy_relationship_removed", "skill", row.from_skill_id, metadata={"to": str(row.to_skill_id)})
+    await db.commit()
+    return {"deleted": True}
+
+
+# ---- runs, jobs, audit ------------------------------------------------------
+
+@router.get("/ai-runs")
+async def list_ai_runs(status: str | None = None, task_type: str | None = None, limit: int = 200,
+                       user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    stmt = select(AIRun)
     if status:
         stmt = stmt.where(AIRun.status == status)
-    rows = (await db.scalars(stmt)).all()
-    return [
-        {
-            "id": r.id,
-            "task_type": r.task_type,
-            "model": r.model,
-            "status": r.status,
-            "latency_ms": r.latency_ms,
-            "error": r.error,
-            "created_at": r.created_at,
-        }
-        for r in rows
-    ]
+    if task_type:
+        stmt = stmt.where(AIRun.task_type == task_type)
+    rows = (await db.scalars(stmt.order_by(AIRun.created_at.desc()).limit(limit))).all()
+    return [{"id": r.id, "task_type": r.task_type, "provider": r.provider, "model": r.model, "prompt_version": r.prompt_version,
+             "status": r.status, "latency_ms": round(r.latency_ms) if r.latency_ms else None, "schema_valid": r.schema_valid,
+             "error": r.error, "related_entity_type": r.related_entity_type, "related_entity_id": r.related_entity_id,
+             "started_at": r.started_at, "ended_at": r.ended_at, "created_at": r.created_at} for r in rows]
 
 
-@router.get("/agent-runs", response_model=list[dict])
-async def list_agent_runs(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(AgentRun).order_by(AgentRun.created_at.desc()).limit(200))).all()
-    return [
-        {"id": r.id, "agent_type": r.agent_type, "task": r.task, "status": r.status, "error": r.error}
-        for r in rows
-    ]
+@router.get("/agent-runs")
+async def list_agent_runs(agent_type: str | None = None, status: str | None = None, limit: int = 200,
+                          user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    stmt = select(AgentRun)
+    if agent_type:
+        stmt = stmt.where(AgentRun.agent_type == agent_type)
+    if status:
+        stmt = stmt.where(AgentRun.status == status)
+    rows = (await db.scalars(stmt.order_by(AgentRun.created_at.desc()).limit(limit))).all()
+    return [{"id": r.id, "agent_type": r.agent_type, "task": r.task, "status": r.status, "used_fallback": r.used_fallback,
+             "context_type": r.context_type, "context_id": r.context_id, "tool_calls": r.tool_calls or [],
+             "error": r.error, "started_at": r.started_at, "ended_at": r.ended_at} for r in rows]
 
 
-@router.get("/audit-logs", response_model=list[dict])
-async def list_audit_logs(user: User = Depends(require_roles(*ADMIN_ONLY)), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(200))).all()
-    return [
-        {
-            "id": r.id,
-            "action": r.action,
-            "entity_type": r.entity_type,
-            "entity_id": r.entity_id,
-            "actor_user_id": r.actor_user_id,
-            "created_at": r.created_at,
-        }
-        for r in rows
-    ]
+@router.get("/jobs")
+async def list_jobs(status: str | None = None, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    stmt = select(ProcessingJob)
+    if status:
+        stmt = stmt.where(ProcessingJob.status == status)
+    rows = (await db.scalars(stmt.order_by(ProcessingJob.updated_at.desc()).limit(200))).all()
+    return [{"id": r.id, "job_key": r.job_key, "job_type": r.job_type, "status": r.status, "attempts": r.attempts,
+             "error": r.error, "payload": r.payload, "updated_at": r.updated_at} for r in rows]
+
+
+@router.post("/jobs/{job_id}/retry", status_code=202)
+async def retry_job(job_id: uuid.UUID, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    """Re-dispatches a job. Safe because every task is idempotent."""
+    job = await db.get(ProcessingJob, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    p = job.payload or {}
+    from app.workers import tasks_jobs, tasks_knowledge, tasks_matching, tasks_questions, tasks_reports, tasks_resumes
+
+    dispatch = {
+        "jd_processing": lambda: tasks_jobs.process_jd_task.delay(p["job_id"]),
+        "resume_processing": lambda: tasks_resumes.process_resume_task.delay(p["student_id"], p["document_id"]),
+        "knowledge_ingestion": lambda: tasks_knowledge.ingest_task.delay(p["source_id"], str(user.id)),
+        "assessment_generation": lambda: tasks_questions.generate_assessment_task.delay(p["job_id"], p.get("title", "Assessment"), str(user.id)),
+        "bulk_matching": lambda: tasks_matching.recompute_job_matches_task.delay(p["job_id"]),
+        "report_generation": lambda: tasks_reports.institution_report_task.delay(p["institution_id"]),
+    }
+    if job.job_type not in dispatch:
+        raise HTTPException(422, f"Don't know how to retry {job.job_type}")
+    await upsert_job(job.job_key, job.job_type, p)
+    dispatch[job.job_type]()
+    await audit(db, user, "job_retried", "processing_job", job.id, metadata={"job_key": job.job_key})
+    await db.commit()
+    return {"status": "PENDING", "job_key": job.job_key}
+
+
+@router.get("/audit-logs")
+async def list_audit_logs(action: str | None = None, entity_type: str | None = None, limit: int = 300,
+                          user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    stmt = select(AuditEvent, User.email).outerjoin(User, User.id == AuditEvent.actor_user_id)
+    if action:
+        stmt = stmt.where(AuditEvent.action == action)
+    if entity_type:
+        stmt = stmt.where(AuditEvent.entity_type == entity_type)
+    rows = (await db.execute(stmt.order_by(AuditEvent.created_at.desc()).limit(limit))).all()
+    return [{"id": r.id, "action": r.action, "entity_type": r.entity_type, "entity_id": r.entity_id,
+             "actor": email or "system", "organization_id": r.organization_id, "metadata": r.event_metadata,
+             "created_at": r.created_at} for r, email in rows]
+
+
+@router.get("/audit-actions")
+async def audit_actions(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(AuditEvent.action, func.count()).group_by(AuditEvent.action).order_by(AuditEvent.action))).all()
+    return [{"action": a, "count": c} for a, c in rows]

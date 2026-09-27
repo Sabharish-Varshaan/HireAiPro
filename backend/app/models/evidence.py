@@ -11,6 +11,7 @@ from app.models.enums import EvidenceSourceType
 
 class SkillEvidence(Base, UUIDPk, TimestampMixin):
     __tablename__ = "skill_evidence"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_skill_evidence_idem"),)
 
     student_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("student_profiles.id"), index=True
@@ -31,6 +32,8 @@ class SkillEvidence(Base, UUIDPk, TimestampMixin):
     prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
     rubric_version: Mapped[str | None] = mapped_column(String, nullable=True)
     scoring_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(default=False)
 
 
 class StudentSkill(Base, UUIDPk, TimestampMixin):

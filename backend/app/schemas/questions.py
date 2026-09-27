@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, Visibility
 
@@ -35,9 +35,13 @@ class QuestionOut(BaseModel):
     source_type: QuestionSourceType
     visibility: Visibility
     status: QuestionStatus
+    organization_id: uuid.UUID | None = None
+    correct_option_index: int | None = None
+    source_refs: list | None = None
+    validation_report: dict | None = None
+    skill_name: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QuestionStudentOut(BaseModel):
@@ -51,8 +55,7 @@ class QuestionStudentOut(BaseModel):
     options: list | None
     starter_code: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QuestionImportRow(BaseModel):

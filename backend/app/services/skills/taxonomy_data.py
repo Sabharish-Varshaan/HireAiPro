@@ -249,3 +249,130 @@ TAXONOMY: dict[str, list[tuple[str, list[str]]]] = {
         ("Presentation Skills", []),
     ],
 }
+
+
+# Pass-2 expansion. Aliases are kept deliberately conservative: an alias is
+# only added when it can't reasonably mean anything else in a CS/hiring
+# context (e.g. "k8s", "sklearn"), never generic words.
+TAXONOMY_EXTENSION: dict[str, list[tuple[str, list[str]]]] = {
+    "Programming Languages": [
+        ("Julia", []), ("F#", ["fsharp"]), ("Groovy", []), ("Zig", []), ("Erlang", []),
+        ("OCaml", []), ("Assembly Language", ["assembly", "asm"]), ("WebAssembly", ["wasm"]),
+        ("VB.NET", ["vbnet"]), ("Fortran", []),
+    ],
+    "Frontend": [
+        ("Web Components", []), ("Storybook", []), ("Material UI", ["mui"]), ("Chakra UI", []),
+        ("Three.js", ["threejs"]), ("D3.js", ["d3", "d3js"]), ("Zustand", []),
+        ("TanStack Query", ["react query"]), ("React Router", []), ("Remix", []), ("Astro", []),
+        ("SolidJS", []), ("Ember.js", ["emberjs"]), ("Browser DevTools", []),
+        ("Web Performance Optimization", ["web performance"]), ("Cross-Browser Compatibility", []),
+        ("Micro-Frontends", []), ("Server-Side Rendering", ["ssr"]), ("Static Site Generation", ["ssg"]),
+        ("esbuild", []), ("Babel", []), ("Figma", []), ("UI/UX Design Principles", ["ui ux"]),
+    ],
+    "Backend": [
+        ("Pydantic", []), ("Hibernate", []), ("Spring Security", []), ("Spring Data JPA", ["jpa"]),
+        ("Micronaut", []), ("Quarkus", []), ("Gin (Go)", ["gin gonic"]), ("Ktor", []),
+        ("Phoenix Framework", []), ("Koa.js", ["koajs"]), ("tRPC", []), ("OpenAPI", ["swagger"]),
+        ("Rate Limiting", []), ("Caching Strategies", []), ("Webhooks", []),
+        ("Server-Sent Events", ["sse"]), ("API Gateway", []), ("OAuth 2.0", ["oauth2"]),
+        ("OpenID Connect", ["oidc"]), ("API Versioning", []), ("Pagination Design", []),
+    ],
+    "Software Architecture": [
+        ("Domain-Driven Design", ["ddd"]), ("CQRS", []), ("Event Sourcing", []),
+        ("Clean Architecture", []), ("Hexagonal Architecture", ["ports and adapters"]),
+        ("Monolithic Architecture", []), ("Service Mesh", []), ("Istio", []),
+        ("Distributed Transactions", ["saga pattern"]), ("Scalability Patterns", []),
+        ("High Availability Design", []), ("SOLID Principles", ["solid"]),
+        ("Architecture Decision Records", []),
+    ],
+    "Databases": [
+        ("Oracle Database", []), ("Microsoft SQL Server", ["mssql", "sql server"]), ("MariaDB", []),
+        ("CockroachDB", []), ("Supabase", []), ("Snowflake", []), ("BigQuery", ["google bigquery"]),
+        ("Amazon Redshift", ["redshift"]), ("ClickHouse", []), ("InfluxDB", []), ("TimescaleDB", []),
+        ("Couchbase", []), ("Memcached", []), ("SQL Window Functions", []), ("Stored Procedures", []),
+        ("Transactions & Isolation Levels", ["acid transactions"]), ("Database Replication", []),
+        ("Database Sharding", []), ("pgvector", []), ("Qdrant", []), ("Pinecone", []), ("Milvus", []),
+    ],
+    "Data Engineering": [
+        ("Apache Airflow", ["airflow"]), ("dbt", ["data build tool"]), ("Apache Flink", ["flink"]),
+        ("Apache Beam", []), ("Delta Lake", []), ("Apache Iceberg", []), ("Apache Parquet", ["parquet"]),
+        ("Data Modeling", []), ("Data Lakes", []), ("Stream Processing", []), ("Batch Processing", []),
+        ("Change Data Capture", ["cdc"]), ("Data Quality", []), ("Apache NiFi", []), ("Dagster", []),
+        ("Prefect", []), ("Polars", []), ("Dask", []), ("PySpark", []),
+    ],
+    "Cloud & DevOps": [
+        ("AWS S3", ["amazon s3", "s3"]), ("AWS EC2", ["ec2", "amazon ec2"]), ("AWS IAM", []),
+        ("AWS RDS", ["amazon rds"]), ("AWS ECS", []), ("AWS EKS", ["eks"]),
+        ("Amazon CloudFront", ["cloudfront"]), ("AWS CloudFormation", ["cloudformation"]),
+        ("Azure DevOps", []), ("Azure Functions", []), ("Google Kubernetes Engine", ["gke"]),
+        ("Google Cloud Run", ["cloud run"]), ("Pulumi", []), ("Argo CD", ["argocd"]), ("GitOps", []),
+        ("Podman", []), ("Docker Compose", []), ("Vagrant", []), ("Chef", []), ("Puppet", []),
+        ("OpenTelemetry", ["otel"]), ("Datadog", []), ("Sentry", []), ("Jaeger", []),
+        ("Incident Management", []), ("Blue-Green Deployment", []), ("Canary Releases", []),
+        ("Autoscaling", []), ("Content Delivery Networks", ["cdn"]), ("Heroku", []), ("Vercel", []),
+        ("Netlify", []), ("DigitalOcean", []), ("Cloudflare", []),
+    ],
+    "Testing & Quality": [
+        ("Playwright", []), ("Mocha", []), ("JUnit", []), ("Mockito", []), ("TestNG", []),
+        ("Vitest", []), ("React Testing Library", []), ("Contract Testing", []), ("Pact", []),
+        ("Performance Testing", []), ("k6", []), ("Apache JMeter", ["jmeter"]), ("Locust", []),
+        ("Property-Based Testing", []), ("Mutation Testing", []),
+        ("Behavior-Driven Development", ["bdd"]), ("Cucumber", []), ("Test Automation", []),
+        ("Regression Testing", []), ("Accessibility Testing", []), ("Snapshot Testing", []),
+    ],
+    "Security": [
+        ("Threat Modeling", []), ("Static Application Security Testing", ["sast"]),
+        ("Dynamic Application Security Testing", ["dast"]), ("Dependency Scanning", []),
+        ("Secrets Management", []), ("HashiCorp Vault", []), ("TLS/SSL", ["tls", "ssl"]),
+        ("Web Application Firewall", ["waf"]), ("CSRF Prevention", []), ("Zero Trust Architecture", []),
+        ("SIEM", []), ("Burp Suite", []), ("OWASP ZAP", []), ("Container Security", []),
+        ("Cloud Security", []), ("Vulnerability Management", []),
+    ],
+    "Data Science & ML": [
+        ("Hugging Face Transformers", ["hugging face", "huggingface"]), ("LangChain", []),
+        ("LlamaIndex", []), ("Fine-Tuning LLMs", ["llm fine tuning"]), ("LoRA", []),
+        ("Model Serving", []), ("vLLM", []), ("Ollama", []), ("ONNX", []), ("XGBoost", []),
+        ("LightGBM", []), ("Attention Mechanisms", []), ("Convolutional Neural Networks", ["cnn"]),
+        ("Recurrent Neural Networks", ["rnn", "lstm"]), ("Generative Adversarial Networks", ["gan"]),
+        ("Diffusion Models", []), ("Object Detection", []), ("Image Segmentation", []),
+        ("Speech Recognition", ["asr"]), ("Named Entity Recognition", ["ner"]),
+        ("Sentiment Analysis", []), ("Text Classification", []), ("Semantic Search", []),
+        ("AI Agents", ["llm agents"]), ("LLM Evaluation", []), ("MLflow", []),
+        ("Weights & Biases", ["wandb"]), ("Kubeflow", []), ("Feature Stores", []), ("OpenCV", []),
+        ("spaCy", []), ("NLTK", []), ("JAX", []), ("Jupyter Notebooks", ["jupyter"]),
+        ("Linear Algebra", []), ("Probability", []), ("Calculus", []), ("Gradient Descent", []),
+        ("Bayesian Statistics", []),
+    ],
+    "Data Analytics": [
+        ("Seaborn", []), ("Plotly", []), ("Tableau", []), ("Power BI", ["powerbi"]), ("Looker", []),
+        ("Microsoft Excel", ["excel"]), ("Exploratory Data Analysis", ["eda"]),
+        ("Regression Analysis", []), ("Hypothesis Testing", []), ("Experiment Design", []),
+        ("Data Storytelling", []), ("Business Intelligence", []), ("Product Analytics", []),
+        ("Cohort Analysis", []), ("Forecasting", []), ("SciPy", []), ("Statsmodels", []),
+    ],
+    "Operating Systems & Networking": [
+        ("Memory Management", []), ("File Systems", []), ("Unix Command Line", ["unix"]),
+        ("TCP/IP", ["tcp", "tcpip"]), ("HTTP", ["http protocol"]), ("HTTP/2", ["http2"]),
+        ("Reverse Proxy", []), ("VPN", []), ("Subnetting", []), ("Routing & Switching", []),
+        ("Socket Programming", []), ("systemd", []), ("Windows Server", []),
+    ],
+    "Version Control & Collaboration": [
+        ("Git Branching Strategies", ["git flow"]), ("Monorepos", []), ("Semantic Versioning", ["semver"]),
+        ("Trunk-Based Development", []),
+    ],
+    "Computer Science Fundamentals": [
+        ("Binary Search", []), ("Tree Data Structures", []), ("Hash Tables", []), ("Linked Lists", []),
+        ("Stacks & Queues", []), ("Greedy Algorithms", []), ("Backtracking", []),
+        ("Bit Manipulation", []), ("String Algorithms", []), ("Discrete Mathematics", []),
+    ],
+    "Mobile Development": [
+        ("Kotlin Multiplatform", []), ("Ionic", []), ("Xamarin", []), (".NET MAUI", ["maui"]),
+        ("Mobile Testing", []), ("Expo", []), ("Firebase", []),
+    ],
+    "Product & Soft Skills": [
+        ("Estimation & Planning", []), ("Written Communication", []),
+    ],
+}
+
+for _cat, _items in TAXONOMY_EXTENSION.items():
+    TAXONOMY.setdefault(_cat, []).extend(_items)

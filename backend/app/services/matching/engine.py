@@ -54,6 +54,9 @@ async def compute_match_for_application(db: AsyncSession, application_id: uuid.U
         ).all()
     }
 
+    if not job_skills:
+        raise ValueError("Job has no confirmed requirements; matching needs recruiter-confirmed skills")
+
     required = [js for js in job_skills if js.requirement_type == RequirementType.REQUIRED and js.skill_id]
     preferred = [js for js in job_skills if js.requirement_type == RequirementType.PREFERRED and js.skill_id]
 
@@ -88,14 +91,7 @@ async def compute_match_for_application(db: AsyncSession, application_id: uuid.U
         sum(s.confidence for s in matched_skills) / len(matched_skills) if matched_skills else 0.0
     )
 
-    # Semantic relevance: fraction of job skills for which the student has ANY
-    # evidence at all (even low level) — a coarse deterministic proxy that
-    # rewards breadth of exposure beyond the exact minimum-level bar.
-    semantic_relevance = (
-        len([sid for sid in all_job_skill_ids if sid in student_skills]) / len(all_job_skill_ids)
-        if all_job_skill_ids
-        else 0.0
-    )
+    semantic_relevance = await _semantic_relevance(db, application.job_id, student_skills)
 
     match_score = (
         WEIGHTS["required"] * required_fit
@@ -121,6 +117,33 @@ async def compute_match_for_application(db: AsyncSession, application_id: uuid.U
     match.missing_skills = missing_skills
     match.matching_version = settings.MATCHING_VERSION
 
+    from app.services.audit import audit
+
+    await audit(db, None, "match_recalculated", "application", application.id,
+                metadata={"match_score": match.match_score, "matching_version": match.matching_version})
     await db.commit()
     await db.refresh(match)
     return match
+
+
+async def _semantic_relevance(db: AsyncSession, job_id: uuid.UUID, student_skills: dict) -> float:
+    """Cosine similarity (BGE-M3, normalized) between the job profile (title +
+    confirmed skills) and the student's *verified* skill profile. Resume claims
+    are excluded because only StudentSkill rows (scored evidence) are used.
+    Deterministic for fixed inputs; clipped to [0, 1]."""
+    from app.models.jobs import Job
+    from app.services.ai_gateway.embeddings import get_embedding_service
+
+    if not student_skills:
+        return 0.0
+    job = await db.get(Job, job_id)
+    job_skill_ids = (await db.scalars(select(JobSkill.skill_id).where(JobSkill.job_id == job_id, JobSkill.confirmed.is_(True)))).all()
+    names = {s.id: s.canonical_name for s in (await db.scalars(
+        select(Skill).where(Skill.id.in_(set(job_skill_ids) | set(student_skills))))).all()}
+    job_text = f"{job.title}. Skills: " + ", ".join(names.get(i, "") for i in job_skill_ids if i)
+    student_text = "Demonstrated skills: " + ", ".join(
+        f"{names.get(sid, '')} ({'strong' if ss.estimated_level >= 0.7 else 'working' if ss.estimated_level >= 0.4 else 'basic'})"
+        for sid, ss in sorted(student_skills.items(), key=lambda kv: -kv[1].estimated_level)
+    )
+    a, b = get_embedding_service().embed([job_text, student_text])
+    return max(0.0, min(1.0, float(sum(x * y for x, y in zip(a, b)))))

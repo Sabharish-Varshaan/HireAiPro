@@ -61,7 +61,10 @@ async def update_my_profile(
 
 
 @router.get("/{student_id}", response_model=StudentProfileOut)
-async def get_student_profile(student_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_student_profile(student_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.api.tenancy import assert_can_view_student
+
+    await assert_can_view_student(db, user, student_id)
     profile = await db.get(StudentProfile, student_id)
     if profile is None:
         raise HTTPException(404, "Student profile not found")
@@ -128,6 +131,11 @@ async def upload_resume(
 ):
     profile = await _get_or_create_profile(db, user)
     content = await file.read()
+    name = (file.filename or "").lower()
+    if not name.endswith((".pdf", ".docx", ".txt")):
+        raise HTTPException(415, "Upload a PDF, DOCX or TXT resume")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Resume must be under 10MB")
     storage_key, sha256, size = get_storage_service().save(file.filename, content)
     doc = Document(
         owner_user_id=user.id,
@@ -145,7 +153,9 @@ async def upload_resume(
     profile.resume_parse_status = "PENDING"
     await db.commit()
 
+    from app.workers.jobs import upsert_job
     from app.workers.tasks_resumes import process_resume_task
 
+    await upsert_job(f"resume:{doc.id}", "resume_processing", {"student_id": str(profile.id), "document_id": str(doc.id)})
     process_resume_task.delay(str(profile.id), str(doc.id))
     return {"status": "queued", "document_id": doc.id}

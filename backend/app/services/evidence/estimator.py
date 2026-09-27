@@ -47,22 +47,29 @@ async def estimate_student_skill(
     evidences = (
         await db.scalars(
             select(SkillEvidence).where(
-                SkillEvidence.student_id == student_id, SkillEvidence.skill_id == skill_id
+                SkillEvidence.student_id == student_id,
+                SkillEvidence.skill_id == skill_id,
+                SkillEvidence.is_deleted.is_(False),
             )
         )
     ).all()
 
-    scorable = [e for e in evidences if BASE_WEIGHTS.get(e.source_type, 0.0) > 0.0]
+    scorable = [e for e in evidences if BASE_WEIGHTS.get(EvidenceSourceType(e.source_type), 0.0) > 0.0]
     if not scorable:
+        stale = await db.scalar(
+            select(StudentSkill).where(StudentSkill.student_id == student_id, StudentSkill.skill_id == skill_id)
+        )
+        if stale:
+            await db.delete(stale)
         return None
 
-    present_types = {e.source_type for e in scorable}
+    present_types = {EvidenceSourceType(e.source_type) for e in scorable}
     weight_sum = sum(BASE_WEIGHTS[t] for t in present_types) or 1.0
 
     weighted_score = 0.0
     weighted_confidence = 0.0
     for etype in present_types:
-        type_evidences = [e for e in scorable if e.source_type == etype]
+        type_evidences = [e for e in scorable if EvidenceSourceType(e.source_type) == etype]
         type_weight = BASE_WEIGHTS[etype] / weight_sum
 
         # within a type, recency-weighted average, most recent counts more
@@ -110,16 +117,22 @@ async def estimate_student_skill(
     return student_skill
 
 
-async def recalculate_all_skills_for_student(db: AsyncSession, student_id: uuid.UUID) -> list[StudentSkill]:
-    skill_ids = (
-        await db.scalars(
-            select(SkillEvidence.skill_id).where(SkillEvidence.student_id == student_id).distinct()
-        )
-    ).all()
+async def recalculate_all_skills_for_student(
+    db: AsyncSession, student_id: uuid.UUID, actor_user_id: uuid.UUID | None = None, reason: str | None = None
+) -> list[StudentSkill]:
+    from app.services.audit import audit
+
+    skill_ids = set(
+        (await db.scalars(select(SkillEvidence.skill_id).where(SkillEvidence.student_id == student_id))).all()
+    ) | set((await db.scalars(select(StudentSkill.skill_id).where(StudentSkill.student_id == student_id))).all())
     results = []
     for skill_id in skill_ids:
         result = await estimate_student_skill(db, student_id, skill_id)
         if result:
             results.append(result)
+    await audit(
+        db, actor_user_id, "skill_profile_recalculated", "student", student_id,
+        metadata={"skills": len(results), "reason": reason, "scoring_version": settings.SCORING_VERSION},
+    )
     await db.commit()
     return results

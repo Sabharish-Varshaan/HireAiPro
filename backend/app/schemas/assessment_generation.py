@@ -6,6 +6,7 @@ from app.models.enums import QuestionType
 
 
 class GeneratedMCQ(BaseModel):
+    used_context: list[int] = Field(default_factory=list)
     question_text: str
     options: list[str] = Field(min_length=3, max_length=6)
     correct_option_index: int
@@ -13,12 +14,14 @@ class GeneratedMCQ(BaseModel):
 
 
 class GeneratedTechnicalQuestion(BaseModel):
+    used_context: list[int] = Field(default_factory=list)
     question_text: str
     expected_concepts: list[str] = Field(min_length=2)
     rubric_criteria: list[str] = Field(min_length=2)
 
 
 class GeneratedCodingQuestion(BaseModel):
+    used_context: list[int] = Field(default_factory=list)
     question_text: str
     starter_code: str
     test_cases: list[dict] = Field(min_length=2)
@@ -28,10 +31,15 @@ class AssessmentSectionPlan(BaseModel):
     skill_id: uuid.UUID
     skill_name: str
     question_ids: list[uuid.UUID]
+    reused_company: int = 0
+    reused_platform: int = 0
+    generated: int = 0
+    grounded: int = 0
 
 
 class AssessmentPlan(BaseModel):
     job_id: uuid.UUID
+    assessment_id: uuid.UUID | None = None
     sections: list[AssessmentSectionPlan]
     total_questions: int
     covered_skills: list[uuid.UUID]

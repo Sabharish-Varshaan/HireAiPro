@@ -1,15 +1,16 @@
-import time
+import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.database import AsyncSessionLocal
-from app.models.enums import JobStatus, ProcessingStatus, RequirementType
+from app.models.enums import JobStatus, RequirementType
 from app.models.jobs import Job, JobSkill
-from app.models.misc import AIRun
 from app.schemas.jobs import ExtractedJobSkills
-from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
+from app.services.ai_gateway.gateway import get_ai_gateway
+from app.services.audit import audit
 from app.services.skills.normalizer import normalize_skill_name
 from app.workers.celery_app import celery_app
+from app.workers.jobs import TRANSIENT, PermanentJobError, run_tracked
 from app.workers.utils import run_async
 
 JD_EXTRACTION_INSTRUCTION = """You are analyzing a job description to extract required and
@@ -25,73 +26,52 @@ clearly implied, output an entry with:
 Do not invent skills that are not supported by the text. Return 5-20 skills."""
 
 
-async def _process(job_id: str) -> dict:
+async def process_jd(job_id: uuid.UUID) -> dict:
+    """Idempotent: replaces this job's *unconfirmed* suggestions; refuses to
+    touch a job whose requirements a recruiter already confirmed."""
     async with AsyncSessionLocal() as db:
         job = await db.get(Job, job_id)
         if job is None:
-            return {"error": "job not found"}
+            raise PermanentJobError("job not found")
+        if JobStatus(job.status) not in (JobStatus.DRAFT, JobStatus.SKILLS_EXTRACTED):
+            raise PermanentJobError(f"job is {job.status}; confirmed requirements are never overwritten")
+        if not (job.description_raw or "").strip():
+            raise PermanentJobError("job has no JD text")
 
-        gateway = get_ai_gateway()
-        run = AIRun(
-            task_type="jd_extraction",
-            provider=gateway.provider,
-            model=gateway.model,
-            status=ProcessingStatus.RUNNING,
-            related_entity_type="job",
-            related_entity_id=job.id,
+        extracted = await get_ai_gateway().extract_structured(
+            text=job.description_raw, schema=ExtractedJobSkills, instruction=JD_EXTRACTION_INSTRUCTION,
+            task_type="jd_extraction", related_entity_type="job", related_entity_id=job.id,
         )
-        db.add(run)
-        await db.flush()
 
-        started = time.monotonic()
-        try:
-            extracted = await gateway.extract_structured(
-                text=job.description_raw or "",
-                schema=ExtractedJobSkills,
-                instruction=JD_EXTRACTION_INSTRUCTION,
-            )
-            run.status = ProcessingStatus.COMPLETED
-            run.schema_valid = True
-        except AIGatewayError as exc:
-            run.status = ProcessingStatus.FAILED
-            run.error = str(exc)
-            run.schema_valid = False
-            await db.commit()
-            return {"error": str(exc)}
-        finally:
-            run.latency_ms = (time.monotonic() - started) * 1000
-
-        # idempotency: clear any prior unconfirmed extraction before inserting
-        existing = (
-            await db.scalars(
-                select(JobSkill).where(JobSkill.job_id == job.id, JobSkill.confirmed.is_(False))
-            )
-        ).all()
-        for row in existing:
-            await db.delete(row)
-        await db.flush()
-
+        await db.execute(delete(JobSkill).where(JobSkill.job_id == job.id, JobSkill.confirmed.is_(False)))
+        merged: dict[str, JobSkill] = {}
         for item in extracted.skills:
-            skill_id, confidence = await normalize_skill_name(db, item.raw_skill_name)
-            db.add(
-                JobSkill(
-                    job_id=job.id,
-                    skill_id=skill_id,
-                    raw_skill_name=item.raw_skill_name,
-                    requirement_type=RequirementType(item.requirement_type),
-                    minimum_level=item.minimum_level,
-                    importance=item.importance,
-                    evidence_text=item.evidence_text,
-                    extraction_confidence=min(item.extraction_confidence, confidence or item.extraction_confidence),
-                    confirmed=False,
-                )
+            skill_id, norm_conf = await normalize_skill_name(db, item.raw_skill_name)
+            key = str(skill_id) if skill_id else f"raw:{item.raw_skill_name.strip().lower()}"
+            prev = merged.get(key)
+            if prev is not None:  # the model listed the same canonical skill twice
+                prev.importance = max(prev.importance, item.importance)
+                prev.minimum_level = max(prev.minimum_level, item.minimum_level)
+                if item.requirement_type == "required":
+                    prev.requirement_type = RequirementType.REQUIRED
+                continue
+            merged[key] = JobSkill(
+                job_id=job.id, skill_id=skill_id, raw_skill_name=item.raw_skill_name,
+                requirement_type=RequirementType(item.requirement_type), minimum_level=item.minimum_level,
+                importance=item.importance, evidence_text=item.evidence_text,
+                extraction_confidence=min(item.extraction_confidence, norm_conf if skill_id else item.extraction_confidence),
+                confirmed=False,
             )
-
+        db.add_all(merged.values())
         job.status = JobStatus.SKILLS_EXTRACTED
+        await audit(db, None, "job_skills_extracted", "job", job.id, organization_id=job.organization_id,
+                    metadata={"extracted": len(extracted.skills), "stored": len(merged),
+                              "unmapped": sum(1 for s in merged.values() if s.skill_id is None)})
         await db.commit()
-        return {"job_id": str(job.id), "skills_extracted": len(extracted.skills)}
+        return {"job_id": str(job.id), "skills_extracted": len(merged)}
 
 
-@celery_app.task(name="jobs.process_jd", bind=True, max_retries=3)
+@celery_app.task(name="jobs.process_jd", bind=True, autoretry_for=TRANSIENT, retry_backoff=10, max_retries=3)
 def process_jd_task(self, job_id: str) -> dict:
-    return run_async(lambda: _process(job_id))
+    return run_async(lambda: run_tracked(f"jd:{job_id}", "jd_processing", {"job_id": job_id}, self.request.id,
+                                         lambda: process_jd(uuid.UUID(job_id))))

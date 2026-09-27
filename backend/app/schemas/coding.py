@@ -16,3 +16,4 @@ class CodingResultOut(BaseModel):
     passed_count: int
     total_count: int
     score: float | None
+    tests: list[dict] = []

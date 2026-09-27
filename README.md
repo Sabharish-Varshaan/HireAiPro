@@ -54,7 +54,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp ../.env.example .env
 .venv/bin/alembic upgrade head
 .venv/bin/python -m app.services.skills.seed
-.venv/bin/uvicorn app.main:app --port 8010 --reload
+.venv/bin/uvicorn app.main:app --port 8020 --reload
 
 # 4. Celery worker (separate terminal)
 cd backend && .venv/bin/celery -A app.workers.celery_app worker --loglevel=info --pool=solo

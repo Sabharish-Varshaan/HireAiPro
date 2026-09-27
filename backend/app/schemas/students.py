@@ -1,7 +1,7 @@
 import datetime as dt
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class StudentProfileOut(BaseModel):
@@ -12,8 +12,7 @@ class StudentProfileOut(BaseModel):
     location: str | None
     resume_parse_status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class StudentProfileUpdate(BaseModel):

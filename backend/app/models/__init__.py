@@ -13,6 +13,7 @@ from app.models.evidence import SkillEvidence, StudentSkill
 from app.models.institutions import Cohort, Department, Institution, InstitutionMember
 from app.models.interviews import Interview, InterviewTurn
 from app.models.jobs import Job, JobSkill
+from app.models.knowledge import KnowledgeChunk, KnowledgeSource
 from app.models.matching import Match
 from app.models.misc import AgentRun, AIRun, AuditEvent, Notification, ProcessingJob
 from app.models.organizations import Organization, OrganizationMember

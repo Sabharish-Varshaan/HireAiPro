@@ -14,6 +14,8 @@ class Notification(Base, UUIDPk, TimestampMixin):
 
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String)
+    event_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     read: Mapped[bool] = mapped_column(default=False)
     link: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -33,6 +35,10 @@ class AIRun(Base, UUIDPk, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     related_entity_type: Mapped[str | None] = mapped_column(String, nullable=True)
     related_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    ended_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    output_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class AgentRun(Base, UUIDPk, TimestampMixin):
@@ -43,6 +49,10 @@ class AgentRun(Base, UUIDPk, TimestampMixin):
     status: Mapped[ProcessingStatus] = mapped_column(String, default=ProcessingStatus.PENDING)
     tool_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    context_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    used_fallback: Mapped[bool] = mapped_column(default=False)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ended_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
@@ -52,6 +62,7 @@ class AuditEvent(Base, UUIDPk, TimestampMixin):
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String, index=True)
     entity_type: Mapped[str] = mapped_column(String)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -69,3 +80,5 @@ class ProcessingJob(Base, UUIDPk, TimestampMixin):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

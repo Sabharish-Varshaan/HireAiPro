@@ -17,6 +17,8 @@ from app.api.v1 import matching as matching_routes
 from app.api.v1 import career as career_routes
 from app.api.v1 import institutions as institutions_routes
 from app.api.v1 import admin as admin_routes
+from app.api.v1 import knowledge as knowledge_routes
+from app.api.v1 import me as me_routes
 
 app = FastAPI(title="HireAiPro API", version="0.1.0")
 
@@ -44,6 +46,8 @@ app.include_router(matching_routes.router, prefix="/api/v1")
 app.include_router(career_routes.router, prefix="/api/v1")
 app.include_router(institutions_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.router, prefix="/api/v1")
+app.include_router(knowledge_routes.router, prefix="/api/v1")
+app.include_router(me_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

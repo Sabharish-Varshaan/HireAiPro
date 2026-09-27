@@ -17,6 +17,7 @@ class Assessment(Base, UUIDPk, TimestampMixin):
     status: Mapped[str] = mapped_column(String, default="DRAFT")
     total_duration_minutes: Mapped[int] = mapped_column(Integer, default=60)
     blueprint: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    plan: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AssessmentSection(Base, UUIDPk, TimestampMixin):
