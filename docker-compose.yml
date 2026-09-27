@@ -1,0 +1,107 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: hireai_postgres
+    environment:
+      POSTGRES_USER: hireai
+      POSTGRES_PASSWORD: hireai
+      POSTGRES_DB: hireai
+    ports:
+      - "5435:5432"
+    volumes:
+      - hireai_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hireai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8
+    container_name: hireai_valkey
+    ports:
+      - "6380:6379"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: hireai_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - hireai_qdrant_data:/qdrant/storage
+
+  judge0-db:
+    image: postgres:13
+    container_name: hireai_judge0_db
+    environment:
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+      POSTGRES_DB: judge0
+    ports:
+      - "5434:5432"
+    volumes:
+      - hireai_judge0_pg:/var/lib/postgresql/data
+
+  judge0-redis:
+    image: redis:7
+    container_name: hireai_judge0_redis
+    command: ["redis-server", "--requirepass", "judge0redis"]
+    ports:
+      - "6381:6379"
+
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    container_name: hireai_judge0_server
+    privileged: true
+    cgroup: host
+    ports:
+      - "2358:2358"
+    environment:
+      REDIS_HOST: judge0-redis
+      REDIS_PASSWORD: judge0redis
+      POSTGRES_HOST: judge0-db
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+    depends_on:
+      - judge0-db
+      - judge0-redis
+
+  judge0-workers:
+    image: judge0/judge0:1.13.1
+    container_name: hireai_judge0_workers
+    privileged: true
+    cgroup: host
+    command: ["./scripts/workers"]
+    environment:
+      REDIS_HOST: judge0-redis
+      REDIS_PASSWORD: judge0redis
+      POSTGRES_HOST: judge0-db
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0
+    depends_on:
+      - judge0-db
+      - judge0-redis
+
+  celery-worker:
+    build:
+      context: ./backend
+    container_name: hireai_celery_worker
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - postgres
+      - valkey
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+
+volumes:
+  hireai_pg_data:
+  hireai_qdrant_data:
+  hireai_judge0_pg:

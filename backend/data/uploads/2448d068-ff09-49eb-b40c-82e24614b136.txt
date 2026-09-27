@@ -1,0 +1,16 @@
+Stu Dent
+Backend Software Engineer
+
+Summary: Final-year Computer Science student passionate about backend systems.
+
+Experience:
+- Built a REST API using Python and FastAPI for a course project, backed by PostgreSQL.
+- Implemented caching layer using Redis to speed up API responses.
+- Wrote unit tests using PyTest achieving 90% coverage.
+- Containerized the application using Docker and deployed to AWS EC2.
+
+Projects:
+- Personal blog engine built with Django and PostgreSQL.
+- Data structures and algorithms practice repository in Python covering sorting, graphs, and dynamic programming.
+
+Skills: Python, FastAPI, Django, PostgreSQL, Redis, Docker, AWS, Git, PyTest, Data Structures, Algorithms
