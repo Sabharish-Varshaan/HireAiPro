@@ -11,6 +11,7 @@ Findings that shaped this (pydantic-ai 2.51):
   Ollama's /v1 endpoint). gpt-oss / gpt-6 use low reasoning effort.
 """
 
+from openai import AsyncOpenAI
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
@@ -54,8 +55,16 @@ def _should_fallback(exc: Exception) -> bool:
 
 def _model(pv: Provider) -> OpenAIChatModel:
     base = f"{pv.base_url}/v1" if pv.vendor == "ollama" else pv.base_url
-    return OpenAIChatModel(pv.model, provider=OpenAIProvider(base_url=base, api_key=pv.api_key or "local"),
-                           settings=_PER_VENDOR_SETTINGS.get(pv.vendor, {}))
+    s = get_settings()
+    # Without an explicit timeout the OpenAI SDK waits up to 600 s per request
+    # (plus retries); a single stalled Groq call once held an assessment job
+    # for ~15 minutes. Bounded, so FallbackModel moves on instead.
+    timeout = s.LLM_OLLAMA_TIMEOUT_SECONDS if pv.vendor == "ollama" else AGENT_MODEL_SETTINGS["timeout"]
+    # max_retries=1: the SDK's own silent retries (default 2) multiplied the
+    # timeout per provider; failover across providers is FallbackModel's job.
+    client = AsyncOpenAI(base_url=base, api_key=pv.api_key or "local", timeout=timeout, max_retries=1)
+    return OpenAIChatModel(pv.model, provider=OpenAIProvider(openai_client=client),
+                           settings={**_PER_VENDOR_SETTINGS.get(pv.vendor, {}), "timeout": timeout})
 
 
 async def agent_run_kwargs(agent_type: str) -> tuple[dict, list[Provider], list[str]]:

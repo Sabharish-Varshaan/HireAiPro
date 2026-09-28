@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { useAuthStore } from "../../stores/authStore";
@@ -18,6 +19,7 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const setAuth = useAuthStore((s) => s.setAuth);
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -26,6 +28,7 @@ export default function SignupPage() {
     try {
       const res = await api.post("/auth/signup", { email, password, full_name: fullName, role });
       const { access_token, user_id, role: r, full_name: fn } = res.data;
+      qc.clear();
       setAuth(access_token, user_id, r, fn);
       if (r === "STUDENT") navigate("/student");
       else if (r === "PLATFORM_ADMIN") navigate("/admin");

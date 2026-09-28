@@ -39,6 +39,7 @@ class QuestionOut(BaseModel):
     correct_option_index: int | None = None
     source_refs: list | None = None
     validation_report: dict | None = None
+    model_version: str | None = None
     skill_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)

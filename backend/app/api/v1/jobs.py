@@ -155,7 +155,7 @@ async def list_jobs(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Job)
+    stmt = select(Job, Organization.name).join(Organization, Organization.id == Job.organization_id)
     if organization_id:
         await require_org_member(db, user, organization_id)
         stmt = stmt.where(Job.organization_id == organization_id)
@@ -166,7 +166,13 @@ async def list_jobs(
             stmt = stmt.where(Job.status == status)
     else:
         stmt = stmt.where(Job.status.in_([s.value for s in VISIBLE_TO_STUDENTS]))
-    return (await db.scalars(stmt.order_by(Job.created_at.desc()))).all()
+    rows = (await db.execute(stmt.order_by(Job.created_at.desc()))).all()
+    out = []
+    for job, org_name in rows:
+        item = JobOut.model_validate(job)
+        item.organization_name = org_name
+        out.append(item)
+    return out
 
 
 @router.put("/{job_id}/requirements/confirm", response_model=JobWithSkillsOut)

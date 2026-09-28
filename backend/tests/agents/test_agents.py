@@ -112,6 +112,46 @@ async def test_interview_agent_enforces_selection_boundary(monkeypatch):
     assert rejected and rejected[0]["rejected"] == str(py) and not run.used_fallback
 
 
+@pytest.mark.asyncio
+async def test_interview_agent_never_repeats_an_assessment_question():
+    from app.models.applications import Application
+    from app.models.assessments import Assessment, AssessmentAnswer, AssessmentAttempt, AssessmentQuestion
+
+    async with AsyncSessionLocal() as db:
+        iv = await _interview(db)
+        docker = (await skill(db, "Docker")).id
+        application = await db.get(Application, iv.application_id)
+        seen = f"Explain Docker layer caching and instruction ordering {uniq('q')}."
+        q = Question(question_text=seen, question_type=QuestionType.TECHNICAL, skill_id=docker,
+                     source_type=QuestionSourceType.COMPANY_PRIVATE, status=QuestionStatus.VALIDATED,
+                     organization_id=(await db.get(IA.Job, iv.job_id)).organization_id)
+        a = Assessment(job_id=iv.job_id, title="A")
+        db.add_all([q, a])
+        await db.flush()
+        aq = AssessmentQuestion(assessment_id=a.id, question_id=q.id)
+        at = AssessmentAttempt(assessment_id=a.id, application_id=application.id, student_id=iv.student_id)
+        db.add_all([aq, at])
+        await db.flush()
+        db.add(AssessmentAnswer(attempt_id=at.id, assessment_question_id=aq.id, answer_text="layers"))
+        await db.commit()
+
+        model = scripted([
+            [call("rank_competencies"), call("search_question_bank", skill_id=str(docker))],
+            # re-asks the question the candidate already answered: must be refused
+            call("save_interview_turn", skill_id=str(docker), question_text=seen.upper(), reason="x"),
+            call("save_interview_turn", skill_id=str(docker), question_text="How would you debug a Docker build whose cache keeps missing?", reason="new"),
+            final(target_skill_id=str(docker), question_text="q", difficulty="easy", reason_for_question="r", should_continue=True),
+        ])
+        with IA.interview_agent.override(model=model):
+            turn = await IA.decide_next_turn(db, iv)
+        await db.commit()
+    assert turn.question_text.startswith("How would you debug")
+    run = await last_run("interview_agent")
+    bank = next(c for c in run.tool_calls if c["tool"] == "search_question_bank")
+    assert bank["found"] == 0  # the answered question is excluded from the bank results
+    assert any("rejected_repeat" in c for c in run.tool_calls)
+
+
 # ---------------- Assessment Agent ----------------
 
 @pytest.mark.asyncio
@@ -238,3 +278,13 @@ async def test_agent_request_limit_stops_runaway_loop_and_falls_back(monkeypatch
 class _StubGW:
     async def generate_structured(self, prompt, schema, **kw):
         return schema(question_text="How do Docker volumes persist data?", reason_for_question="needs evidence")
+
+
+@pytest.mark.asyncio
+async def test_agent_models_carry_a_bounded_request_timeout():
+    from app.agents.model_factory import agent_run_kwargs
+
+    kwargs, chain, _ = await agent_run_kwargs("assessment_agent")
+    model = kwargs["model"]
+    models = getattr(model, "models", [model])
+    assert models and all(0 < (m.settings or {}).get("timeout", 0) <= 300 for m in models)

@@ -258,3 +258,43 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
     await recalculate_all_skills_for_student(db, attempt.student_id, user.id, "assessment_submitted")
     await db.refresh(attempt)
     return attempt
+
+
+@router.get("/attempts/by-application/{application_id}")
+async def attempt_for_application(application_id: uuid.UUID, user: User = Depends(get_current_user),
+                                  db: AsyncSession = Depends(get_db)):
+    """Student: their own attempt (to resume after refresh; no answer keys).
+    Recruiter of the job's company: scored answers incl. rubric evaluations."""
+    from app.api.tenancy import assert_can_view_student
+    from app.models.coding import CodingSubmission, CodingTestResult
+
+    application = await db.get(Application, application_id)
+    if application is None:
+        raise HTTPException(404, "Application not found")
+    await assert_can_view_student(db, user, application.student_id)
+    recruiter = user.role != UserRole.STUDENT
+    if recruiter and user.role != UserRole.PLATFORM_ADMIN:
+        await get_job_for_member(db, user, application.job_id)
+    attempt = await db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.application_id == application_id))
+    if attempt is None:
+        return None
+    answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()
+    out = []
+    for a in answers:
+        aq = await db.get(AssessmentQuestion, a.assessment_question_id)
+        q = await db.get(Question, aq.question_id)
+        sub = await db.scalar(select(CodingSubmission).where(CodingSubmission.assessment_answer_id == a.id)
+                              .order_by(CodingSubmission.created_at.desc()))
+        tests = (await db.scalars(select(CodingTestResult).where(CodingTestResult.submission_id == sub.id)
+                                  .order_by(CodingTestResult.test_case_index))).all() if sub else []
+        item = {"answer_id": a.id, "assessment_question_id": aq.id, "question_type": q.question_type,
+                "answer_text": a.answer_text, "selected_option_index": a.selected_option_index,
+                "coding": {"passed": sub.passed_count, "total": sub.total_count,
+                           "backends": sorted({"local_fallback" if "local fallback" in (t.judge0_status or "") else "judge0"
+                                               for t in tests})} if sub else None}
+        if recruiter or attempt.status == AssessmentAttemptStatus.SCORED:
+            item.update({"question_text": q.question_text, "score": a.score, "is_correct": a.is_correct})
+        if recruiter:
+            item["rubric_evaluation"] = a.rubric_evaluation
+        out.append(item)
+    return {"attempt": AttemptOut.model_validate(attempt), "answers": out}

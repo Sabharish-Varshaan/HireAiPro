@@ -56,6 +56,10 @@ async def compute_match_for_application(db: AsyncSession, application_id: uuid.U
 
     if not job_skills:
         raise ValueError("Job has no confirmed requirements; matching needs recruiter-confirmed skills")
+    names = {
+        sk.id: sk.canonical_name
+        for sk in (await db.scalars(select(Skill).where(Skill.id.in_([js.skill_id for js in job_skills if js.skill_id])))).all()
+    }
 
     required = [js for js in job_skills if js.requirement_type == RequirementType.REQUIRED and js.skill_id]
     preferred = [js for js in job_skills if js.requirement_type == RequirementType.PREFERRED and js.skill_id]
@@ -71,7 +75,7 @@ async def compute_match_for_application(db: AsyncSession, application_id: uuid.U
             level = student_skill.estimated_level if student_skill else 0.0
             fit = skill_fit(level, js.minimum_level)
             total += fit * js.importance
-            skill_name = js.raw_skill_name
+            skill_name = names.get(js.skill_id, js.raw_skill_name)
             entry = {"skill_id": str(js.skill_id), "skill_name": skill_name, "fit": round(fit, 3)}
             if fit >= 0.8:
                 strong_skills.append(entry)

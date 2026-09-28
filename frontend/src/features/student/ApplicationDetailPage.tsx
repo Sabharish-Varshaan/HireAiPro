@@ -1,87 +1,70 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { Badge, Button, Card, Empty, ErrorBox, Loading, pct } from "../../components/ui";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
 
 export default function ApplicationDetailPage() {
   const { applicationId } = useParams();
+  const qc = useQueryClient();
+  const app = useQuery({ queryKey: ["application", applicationId], queryFn: () => api.get(`/applications/${applicationId}`).then((r) => r.data) });
+  const history = useQuery({ queryKey: ["history", applicationId], queryFn: () => api.get(`/applications/${applicationId}/history`).then((r) => r.data) });
+  const a = app.data;
+  const assessment = useQuery({ queryKey: ["assessment-by-job", a?.job_id], enabled: !!a?.job_id,
+    queryFn: () => api.get(`/assessments/by-job/${a.job_id}`).then((r) => r.data) });
+  const interview = useQuery({ queryKey: ["interview", applicationId], queryFn: () => api.get(`/interviews/by-application/${applicationId}`).then((r) => r.data) });
+  const match = useQuery({ queryKey: ["match", applicationId], retry: false, queryFn: () => api.get(`/matching/applications/${applicationId}`).then((r) => r.data) });
+  const refreshAll = () => ["application", "history", "interview", "match", "attempt-by-app"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+  const startInterview = useMutation({ mutationFn: () => api.post("/interviews/start", { application_id: applicationId }), onSuccess: refreshAll });
 
-  const { data: applications } = useQuery({
-    queryKey: ["applications-mine"],
-    queryFn: () => api.get("/applications/mine").then((r) => r.data),
-  });
-  const application = applications?.find((a: any) => a.id === applicationId);
-
-  const { data: assessment } = useQuery({
-    queryKey: ["assessment-by-job", application?.job_id],
-    queryFn: () => api.get(`/assessments/by-job/${application.job_id}`).then((r) => r.data),
-    enabled: !!application?.job_id,
-  });
-
-  const { data: match } = useQuery({
-    queryKey: ["match", applicationId],
-    queryFn: () => api.get(`/matching/applications/${applicationId}`).then((r) => r.data).catch(() => null),
-    enabled: !!applicationId,
-    retry: false,
-  });
-
-  const startInterview = useMutation({
-    mutationFn: () => api.post("/interviews/start", { application_id: applicationId }),
-  });
-
-  if (!application) return <p className="text-sm text-gray-500">Loading...</p>;
+  if (app.isLoading) return <Loading />;
+  if (app.error) return <ErrorBox error={app.error} onRetry={app.refetch} />;
+  const interviewAllowed = ["ASSESSMENT_COMPLETED", "INTERVIEW_PENDING"].includes(a.status) || interview.data;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-4xl space-y-5">
       <div>
-        <h1 className="text-lg font-semibold text-gray-900">Application status</h1>
-        <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">{application.status}</span>
+        <Link to="/student/applications" className="text-xs text-gray-500 underline">← Applications</Link>
+        <div className="flex items-center gap-3"><h1 className="text-lg font-semibold">{a.job_title}</h1><Badge>{a.status}</Badge></div>
+        <p className="text-xs text-gray-500">{a.organization_name}</p>
       </div>
 
-      {assessment && (
-        <section className="bg-white border border-gray-200 rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Assessment: {assessment.title}</h2>
-          <AssessmentRunner assessmentId={assessment.id} applicationId={applicationId!} />
-        </section>
-      )}
+      <Card title="Progress">
+        <ol className="text-xs text-gray-600 space-y-1">
+          {(history.data ?? []).map((h: any, i: number) => (
+            <li key={i}>{new Date(h.at).toLocaleString()} — <b>{h.to.replaceAll("_", " ")}</b>{h.note ? ` · ${h.note}` : ""}</li>
+          ))}
+        </ol>
+      </Card>
 
-      {application.status === "ASSESSMENT_COMPLETED" && (
-        <section className="bg-white border border-gray-200 rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Adaptive interview</h2>
-          {!startInterview.data ? (
-            <button
-              onClick={() => startInterview.mutate()}
-              className="bg-gray-900 text-white text-sm px-4 py-2 rounded-md"
-            >
-              Start interview
-            </button>
-          ) : (
-            <InterviewRunner interviewId={startInterview.data.data.id} />
-          )}
-        </section>
-      )}
+      <Card title="Assessment">
+        {!assessment.data ? <Empty>No published assessment for this job.</Empty> :
+          <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!} onSubmitted={refreshAll} />}
+      </Card>
 
-      {match && (
-        <section className="bg-white border border-gray-200 rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Your match</h2>
-          <p className="text-2xl font-semibold text-gray-900">{Math.round(match.match_score * 100)}%</p>
-          <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-gray-600">
-            <p>Required fit: {Math.round(match.required_skill_fit * 100)}%</p>
-            <p>Preferred fit: {Math.round(match.preferred_skill_fit * 100)}%</p>
+      <Card title="Interview" actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}>
+        {!interviewAllowed && <Empty>Available after you submit the assessment.</Empty>}
+        {interviewAllowed && !interview.data && (
+          <Button onClick={() => startInterview.mutate()} disabled={startInterview.isPending}>Start interview</Button>
+        )}
+        {interview.data && <InterviewRunner interviewId={interview.data.id} />}
+        <ErrorBox error={startInterview.error} />
+      </Card>
+
+      <Card title="Your match and skill gaps">
+        {!match.data ? <Empty>Calculated after your interview.</Empty> : (
+          <div className="space-y-2 text-sm">
+            <p>Overall fit: <b>{pct(match.data.match_score, 1)}</b> <span className="text-xs text-gray-500">(required skills {pct(match.data.required_skill_fit)}, preferred {pct(match.data.preferred_skill_fit)})</span></p>
+            {[["To strengthen", match.data.partial_skills, "amber"], ["Gaps", match.data.missing_skills, "red"]].map(([t, items, tone]: any) => (
+              <div key={t}><p className="text-xs font-medium">{t}</p>
+                <div className="flex flex-wrap gap-1">{(items ?? []).map((s: any) => <Badge key={s.skill_id} tone={tone}>{s.skill_name}</Badge>)}
+                  {(items ?? []).length === 0 && <span className="text-xs text-gray-400">none</span>}</div></div>
+            ))}
+            <Link className="underline text-sm" to={`/student/career/${a.job_id}`}>Build my learning roadmap →</Link>
           </div>
-          {match.missing_skills?.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-gray-700">Skill gaps</p>
-              <ul className="text-xs text-gray-500 list-disc pl-4">
-                {match.missing_skills.map((s: any) => (
-                  <li key={s.skill_id}>{s.skill_name || s.skill_id}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
+        )}
+      </Card>
     </div>
   );
 }

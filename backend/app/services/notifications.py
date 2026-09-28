@@ -27,7 +27,6 @@ async def notify(
 
 APPLICATION_STATUS_MESSAGES = {
     "APPLIED": ("application_submitted", "Application submitted"),
-    "ASSESSMENT_PENDING": ("assessment_assigned", "Assessment ready to take"),
     "ASSESSMENT_COMPLETED": ("assessment_completed", "Assessment completed"),
     "INTERVIEW_PENDING": ("interview_ready", "Interview ready"),
     "INTERVIEW_COMPLETED": ("interview_completed", "Interview completed"),

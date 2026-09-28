@@ -67,6 +67,7 @@ export default function CompanyJobsPage() {
         </button>
       </div>
       <div className="bg-white border border-gray-200 rounded-lg divide-y">
+        {jobs && jobs.length === 0 && <p className="p-4 text-sm text-gray-500">No jobs yet. Create one above, then paste its job description.</p>}
         {jobs?.map((j: any) => (
           <Link key={j.id} to={`/company/jobs/${j.id}`} className="p-4 flex items-center justify-between text-sm hover:bg-gray-50">
             <span className="text-gray-800">{j.title}</span>

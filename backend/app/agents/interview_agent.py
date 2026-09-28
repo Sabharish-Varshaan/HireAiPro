@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent, tool_uuid
+from app.models.assessments import AssessmentAnswer, AssessmentAttempt, AssessmentQuestion
 from app.models.enums import QuestionStatus as QS, QuestionType, Visibility
 from app.models.evidence import SkillEvidence
 from app.models.interviews import Interview, InterviewTurn
@@ -111,13 +112,43 @@ async def get_interview_history(ctx: RunContext[InterviewDeps]) -> list[dict]:
     ]
 
 
+async def _already_asked(d: InterviewDeps) -> tuple[set[uuid.UUID], set[str]]:
+    """Question ids and normalised texts the candidate already saw in this
+    application (its assessment attempt and earlier interview turns)."""
+    ids = set(
+        (
+            await d.db.scalars(
+                select(AssessmentQuestion.question_id)
+                .join(AssessmentAnswer, AssessmentAnswer.assessment_question_id == AssessmentQuestion.id)
+                .join(AssessmentAttempt, AssessmentAttempt.id == AssessmentAnswer.attempt_id)
+                .where(AssessmentAttempt.application_id == d.interview.application_id)
+            )
+        ).all()
+    )
+    texts = {_norm(t) for t in (await d.db.scalars(select(Question.question_text).where(Question.id.in_(ids)))).all()} if ids else set()
+    texts |= {
+        _norm(t) for t in (
+            await d.db.scalars(select(InterviewTurn.question_text).where(InterviewTurn.interview_id == d.interview.id))
+        ).all()
+    }
+    return ids, texts
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 @interview_agent.tool
 async def search_question_bank(ctx: RunContext[InterviewDeps], skill_id: str) -> list[str]:
-    """Up to 3 approved technical questions for the skill visible to this job's company."""
+    """Up to 3 approved technical questions for the skill visible to this job's company,
+    excluding any the candidate already answered in this application. Use them as
+    inspiration; do not repeat them verbatim."""
     d = ctx.deps
+    seen_ids, _ = await _already_asked(d)
     rows = (
         await d.db.scalars(
             select(Question).where(
+                Question.id.not_in(seen_ids) if seen_ids else true(),
                 Question.skill_id == tool_uuid(skill_id, "skill_id"),
                 Question.question_type == QuestionType.TECHNICAL,
                 Question.status.in_([QS.VALIDATED.value, QS.APPROVED.value, QS.ACTIVE.value]),
@@ -154,6 +185,10 @@ async def save_interview_turn(ctx: RunContext[InterviewDeps], skill_id: str, que
         return {"error": f"skill must be one of {[c.skill_name + ':' + str(c.skill_id) for c in window]}"}
     if len(question_text.strip()) < 15:
         return {"error": "question is too short"}
+    _, seen_texts = await _already_asked(d)
+    if _norm(question_text) in seen_texts:
+        d.log.record("save_interview_turn", rejected_repeat=skill_id)
+        return {"error": "the candidate already answered this exact question; ask a different one"}
     turn = await _persist_turn(d, chosen, question_text.strip(), reason.strip())
     d.log.record("save_interview_turn", skill=chosen.skill_name, turn_id=turn.id)
     return {"turn_id": str(turn.id), "skill": chosen.skill_name, "difficulty": turn.difficulty}

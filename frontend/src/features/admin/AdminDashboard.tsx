@@ -4,8 +4,7 @@ import { api } from "../../api/client";
 export default function AdminDashboard() {
   const { data: aiRuns } = useQuery({ queryKey: ["ai-runs"], queryFn: () => api.get("/admin/ai-runs").then((r) => r.data) });
   const { data: agentRuns } = useQuery({ queryKey: ["agent-runs"], queryFn: () => api.get("/admin/agent-runs").then((r) => r.data) });
-  const { data: skills } = useQuery({ queryKey: ["admin-skills"], queryFn: () => api.get("/admin/skills").then((r) => r.data) });
-  const { data: aiQuestions } = useQuery({ queryKey: ["ai-questions"], queryFn: () => api.get("/questions", { params: { source_type: "AI_GENERATED" } }).then((r) => r.data) });
+  const { data: counts } = useQuery({ queryKey: ["admin-stats"], queryFn: () => api.get("/admin/stats").then((r) => r.data) });
   const { data: usage } = useQuery({ queryKey: ["ai-usage"], queryFn: () => api.get("/admin/ai/usage").then((r) => r.data) });
   const { data: providers } = useQuery({ queryKey: ["ai-providers"], queryFn: () => api.get("/admin/ai/providers").then((r) => r.data) });
 
@@ -16,15 +15,15 @@ export default function AdminDashboard() {
       <div className="grid grid-cols-3 gap-4 text-sm">
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <p className="text-gray-500">Skills in taxonomy</p>
-          <p className="text-2xl font-semibold">{skills?.total ?? "—"}</p>
+          <p className="text-2xl font-semibold">{counts?.skills ?? "—"}</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <p className="text-gray-500">AI runs logged</p>
-          <p className="text-2xl font-semibold">{aiRuns?.length ?? "—"}</p>
+          <p className="text-2xl font-semibold">{counts?.ai_runs ?? "—"}</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <p className="text-gray-500">AI-generated questions</p>
-          <p className="text-2xl font-semibold">{aiQuestions?.length ?? "—"}</p>
+          <p className="text-2xl font-semibold">{counts?.ai_generated_questions ?? "—"}</p>
         </div>
       </div>
 

@@ -31,6 +31,7 @@ class JobSkillOut(BaseModel):
 class JobOut(BaseModel):
     id: uuid.UUID
     organization_id: uuid.UUID
+    organization_name: str | None = None
     title: str
     description_raw: str | None
     status: JobStatus
@@ -42,7 +43,6 @@ class JobOut(BaseModel):
 
 class JobWithSkillsOut(JobOut):
     skills: list[JobSkillOut] = []
-    organization_name: str | None = None
 
 
 class JobSkillUpdate(BaseModel):

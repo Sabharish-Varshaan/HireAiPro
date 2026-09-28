@@ -21,7 +21,7 @@ export default function JobsFeedPage() {
             className="block bg-white border border-gray-200 rounded-lg p-4 hover:border-gray-300"
           >
             <p className="font-medium text-gray-900">{job.title}</p>
-            <p className="text-sm text-gray-500">{job.location ?? "Remote"} · {job.employment_type ?? "Full-time"}</p>
+            <p className="text-sm text-gray-500">{[job.organization_name, job.location, job.employment_type].filter(Boolean).join(" · ")}</p>
           </Link>
         ))}
       </div>

@@ -85,6 +85,10 @@ def estimate_difficulty(qtype: QuestionType, text: str) -> str:
 
 def parse_csv(raw: bytes) -> list[dict]:
     reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
+    headers = {h.strip() for h in (reader.fieldnames or []) if h}
+    missing = {"question_text", "skill"} - headers
+    if missing:
+        raise ValueError(f"missing required column(s): {', '.join(sorted(missing))}")
     rows = []
     for r in reader:
         r = {k.strip(): (v or "").strip() for k, v in r.items() if k}

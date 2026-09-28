@@ -58,7 +58,8 @@ async def stats(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db))
     return {
         "users": await count(User), "organizations": await count(Organization), "institutions": await count(Institution),
         "skills": await count(Skill, Skill.is_active.is_(True)), "aliases": await count(SkillAlias),
-        "questions": await count(Question), "questions_awaiting_review": await count(Question, Question.status.in_(["DRAFT", "VALIDATED"])),
+        "questions": await count(Question), "ai_generated_questions": await count(Question, Question.source_type == "AI_GENERATED"),
+        "questions_awaiting_review": await count(Question, Question.status.in_(["DRAFT", "VALIDATED"])),
         "knowledge_sources": await count(KnowledgeSource), "knowledge_failed": await count(KnowledgeSource, KnowledgeSource.status == "FAILED"),
         "ai_runs": await count(AIRun), "ai_runs_failed": await count(AIRun, AIRun.status == "FAILED"),
         "agent_runs": await count(AgentRun), "agent_runs_fallback": await count(AgentRun, AgentRun.used_fallback.is_(True)),
@@ -71,6 +72,24 @@ async def list_users(user: User = Depends(ADMIN), db: AsyncSession = Depends(get
     rows = (await db.scalars(select(User).order_by(User.created_at.desc()))).all()
     return [{"id": u.id, "email": u.email, "role": u.role, "full_name": u.full_name, "is_active": u.is_active,
              "created_at": u.created_at} for u in rows]
+
+
+class UserUpdate(BaseModel):
+    is_active: bool
+
+
+@router.patch("/users/{user_id}")
+async def update_user(user_id: uuid.UUID, payload: UserUpdate, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found")
+    if target.id == user.id:
+        raise HTTPException(400, "You cannot deactivate your own account")
+    target.is_active = payload.is_active
+    await audit(db, user, "user_activated" if payload.is_active else "user_deactivated", "user", target.id,
+                metadata={"email": target.email})
+    await db.commit()
+    return {"id": target.id, "is_active": target.is_active}
 
 
 @router.get("/organizations")
@@ -232,6 +251,9 @@ async def list_ai_runs(status: str | None = None, task_type: str | None = None, 
     rows = (await db.scalars(stmt.order_by(AIRun.created_at.desc()).limit(limit))).all()
     return [{"id": r.id, "task_type": r.task_type, "provider": r.provider, "model": r.model, "prompt_version": r.prompt_version,
              "status": r.status, "latency_ms": round(r.latency_ms) if r.latency_ms else None, "schema_valid": r.schema_valid,
+             "input_tokens": r.input_tokens, "cached_input_tokens": r.cached_input_tokens, "output_tokens": r.output_tokens,
+             "estimated_cost_usd": r.estimated_cost_usd, "retry_count": r.retry_count, "fallback_used": r.fallback_used,
+             "fallback_reason": r.fallback_reason, "tool_call_success": r.tool_call_success,
              "error": r.error, "related_entity_type": r.related_entity_type, "related_entity_id": r.related_entity_id,
              "started_at": r.started_at, "ended_at": r.ended_at, "created_at": r.created_at} for r in rows]
 

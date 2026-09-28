@@ -110,8 +110,8 @@ async def strengths_and_gaps(db: AsyncSession, institution_id, department_id=Non
         rows.append({**d, "cohort_avg_level": round(cohort_avg, 3), "gap": round(d["avg_required_level"] - cohort_avg, 3)})
     return {
         "students": n_students,
-        "gaps": sorted(rows, key=lambda r: r["gap"] * r["avg_importance"], reverse=True)[:limit],
-        "strengths": sorted([r for r in rows if r["cohort_avg_level"] > 0], key=lambda r: r["gap"])[:limit],
+        "gaps": sorted([r for r in rows if r["gap"] > 0], key=lambda r: r["gap"] * r["avg_importance"], reverse=True)[:limit],
+        "strengths": sorted([r for r in rows if r["cohort_avg_level"] > 0 and r["gap"] <= 0], key=lambda r: r["gap"])[:limit],
     }
 
 
@@ -158,13 +158,14 @@ async def role_readiness(db: AsyncSession, institution_id, department_id=None, c
             "avg_match_score": round(float(row[2]), 3) if row[2] is not None else None}
 
 
-async def placement_readiness(db: AsyncSession, institution_id) -> dict:
-    funnel = {f["status"]: f["count"] for f in await application_funnel(db, institution_id)}
-    total = await db.scalar(select(func.count(StudentProfile.id)).where(StudentProfile.institution_id == institution_id))
+async def placement_readiness(db: AsyncSession, institution_id, department_id=None, cohort_id=None) -> dict:
+    funnel = {f["status"]: f["count"] for f in await application_funnel(db, institution_id, department_id, cohort_id)}
+    where = _student_filter(institution_id, department_id, cohort_id)
+    total = await db.scalar(select(func.count(StudentProfile.id)).where(where))
     with_apps = await db.scalar(
         select(func.count(func.distinct(Application.student_id)))
         .join(StudentProfile, StudentProfile.id == Application.student_id)
-        .where(StudentProfile.institution_id == institution_id)
+        .where(where)
     )
     return {"total_students": total or 0, "students_with_applications": with_apps or 0,
             "shortlisted": funnel.get("SHORTLISTED", 0), "offers": funnel.get("OFFER", 0)}
@@ -172,7 +173,7 @@ async def placement_readiness(db: AsyncSession, institution_id) -> dict:
 
 async def institution_report(db: AsyncSession, institution_id, department_id=None, cohort_id=None, with_summary=False) -> dict:
     report = {
-        "placement": await placement_readiness(db, institution_id),
+        "placement": await placement_readiness(db, institution_id, department_id, cohort_id),
         "readiness": await role_readiness(db, institution_id, department_id, cohort_id),
         "assessment_performance": await assessment_performance(db, institution_id, department_id, cohort_id),
         "funnel": await application_funnel(db, institution_id, department_id, cohort_id),

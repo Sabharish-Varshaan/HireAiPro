@@ -11,6 +11,7 @@ class StudentProfileOut(BaseModel):
     bio: str | None
     location: str | None
     resume_parse_status: str
+    resume_document_id: uuid.UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

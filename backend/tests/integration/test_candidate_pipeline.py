@@ -118,6 +118,7 @@ async def test_full_candidate_pipeline(client, monkeypatch):
     assert [h["to"] for h in hist] == ["APPLIED", "ASSESSMENT_PENDING", "ASSESSMENT_COMPLETED"]
     notes = (await client.get("/me/notifications", headers=hs)).json()
     assert {"application_submitted", "assessment_assigned", "assessment_completed"} <= {n["event_type"] for n in notes}
+    assert [n["event_type"] for n in notes].count("assessment_assigned") == 1  # starting the attempt must not re-notify
     async with AsyncSessionLocal() as db:
         actions = set((await db.scalars(select(AuditEvent.action).where(AuditEvent.entity_id.in_([uuid.UUID(app_id), uuid.UUID(attempt["id"]), st.id]))) ).all())
     assert {"application_submitted", "application_status_changed", "assessment_submitted", "skill_profile_recalculated",

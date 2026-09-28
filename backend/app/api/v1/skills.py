@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.skills import Skill
+from app.models.skills import Skill, SkillAlias
 from app.schemas.skills import SkillOut
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -36,12 +36,15 @@ async def list_skills(
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Skill)
+    stmt = select(Skill).where(Skill.is_active.is_(True))
     if q:
-        stmt = stmt.where(Skill.canonical_name.ilike(f"%{q}%"))
+        stmt = stmt.where(
+            Skill.canonical_name.ilike(f"%{q}%")
+            | Skill.id.in_(select(SkillAlias.skill_id).where(SkillAlias.alias.ilike(f"%{q}%")))
+        )
     if category:
         stmt = stmt.where(Skill.category == category)
-    stmt = stmt.limit(limit)
+    stmt = stmt.order_by(Skill.canonical_name).limit(limit)
     return (await db.scalars(stmt)).all()
 
 

@@ -17,6 +17,7 @@ import datetime as dt
 import email.utils
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -38,6 +39,8 @@ from app.services.ai_gateway.providers import (
     mark_rate_limited,
     route,
 )
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 T = TypeVar("T", bound=BaseModel)
@@ -80,7 +83,9 @@ async def _record_run(**fields: Any) -> None:
             db.add(AIRun(**fields))
             await db.commit()
     except Exception:  # noqa: BLE001
-        pass
+        # Never break the AI call itself, but never lose a cost row silently:
+        # a missing ai_run means the budget governor under-counts spend.
+        logger.exception("failed to record ai_run (task=%s provider=%s)", fields.get("task_type"), fields.get("provider"))
 
 
 @dataclass

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { useAuthStore } from "../../stores/authStore";
@@ -10,6 +11,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const setAuth = useAuthStore((s) => s.setAuth);
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -18,6 +20,7 @@ export default function LoginPage() {
     try {
       const res = await api.post("/auth/login", { email, password });
       const { access_token, user_id, role, full_name } = res.data;
+      qc.clear();
       setAuth(access_token, user_id, role, full_name);
       navigate(`/${role.toLowerCase().includes("student") ? "student" : role.toLowerCase().includes("institution") || role.toLowerCase().includes("faculty") || role.toLowerCase().includes("placement") || role.toLowerCase().includes("department") ? "institution" : role === "PLATFORM_ADMIN" ? "admin" : "company"}`);
     } catch (err: any) {

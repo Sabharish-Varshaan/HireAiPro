@@ -17,9 +17,9 @@ export default function ApplicationsPage() {
         )}
         {applications?.map((a: any) => (
           <div key={a.id} className="p-4 flex items-center justify-between text-sm">
-            <span className="text-gray-700">Job {a.job_id.slice(0, 8)}</span>
+            <span className="text-gray-700">{a.job_title} <span className="text-xs text-gray-400">{a.organization_name}</span></span>
             <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">{a.status}</span>
-            <Link className="underline text-gray-900" to={`/student/applications/${a.id}`}>
+            <Link className="underline text-gray-900" to={`/student/applications/${a.id}`} title={a.job_title}>
               Open
             </Link>
           </div>

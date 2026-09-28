@@ -159,3 +159,23 @@ async def upload_resume(
     await upsert_job(f"resume:{doc.id}", "resume_processing", {"student_id": str(profile.id), "document_id": str(doc.id)})
     process_resume_task.delay(str(profile.id), str(doc.id))
     return {"status": "queued", "document_id": doc.id}
+
+
+@router.get("/me/full")
+async def my_full_profile(user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
+    profile = await _get_or_create_profile(db, user)
+
+    async def rows(model):
+        return (await db.scalars(select(model).where(model.student_id == profile.id).order_by(model.created_at))).all()
+
+    return {
+        "profile": StudentProfileOut.model_validate(profile),
+        "education": [{"id": r.id, "institution_name": r.institution_name, "degree": r.degree, "field_of_study": r.field_of_study,
+                       "start_year": r.start_year, "end_year": r.end_year, "gpa": r.gpa} for r in await rows(StudentEducation)],
+        "experience": [{"id": r.id, "company_name": r.company_name, "title": r.title, "description": r.description,
+                        "start_date": r.start_date, "end_date": r.end_date} for r in await rows(StudentExperience)],
+        "projects": [{"id": r.id, "title": r.title, "description": r.description, "url": r.url,
+                      "claimed_skill_names": r.claimed_skill_names} for r in await rows(StudentProject)],
+        "certifications": [{"id": r.id, "name": r.name, "issuer": r.issuer, "issued_date": r.issued_date,
+                            "credential_url": r.credential_url} for r in await rows(StudentCertification)],
+    }

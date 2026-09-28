@@ -16,30 +16,20 @@ export default function StudentDashboard() {
     queryFn: () => api.get(`/evidence/students/${profile.id}/skills`).then((r) => r.data),
     enabled: !!profile?.id,
   });
-  const skillIds = (skills ?? []).map((s: any) => s.skill_id).join(",");
-  const { data: skillDetails } = useQuery({
-    queryKey: ["skill-details", skillIds],
-    queryFn: () => api.get("/skills/by-ids", { params: { ids: skillIds } }).then((r) => r.data),
-    enabled: skillIds.length > 0,
-  });
-  const skillNameById: Record<string, string> = Object.fromEntries(
-    (skillDetails ?? []).map((s: any) => [s.id, s.canonical_name])
-  );
-
   return (
     <div className="space-y-6 max-w-4xl">
       <h1 className="text-lg font-semibold text-gray-900">Your profile</h1>
       <div className="bg-white border border-gray-200 rounded-lg p-4 grid grid-cols-3 gap-4 text-sm">
         <div>
           <p className="text-gray-500">Resume status</p>
-          <p className="font-medium">{profile?.resume_parse_status ?? "—"}</p>
+          <p className="font-medium">{profile?.resume_document_id ? profile.resume_parse_status : "Not uploaded"}</p>
         </div>
         <div>
           <p className="text-gray-500">Applications</p>
           <p className="font-medium">{applications?.length ?? 0}</p>
         </div>
         <div>
-          <p className="text-gray-500">Verified skills</p>
+          <p className="text-gray-500">Verified skills (assessed)</p>
           <p className="font-medium">{skills?.length ?? 0}</p>
         </div>
       </div>
@@ -53,7 +43,7 @@ export default function StudentDashboard() {
         )}
         {(skills ?? []).map((s: any) => (
           <div key={s.skill_id} className="p-3 flex items-center justify-between text-sm">
-            <span className="text-gray-700">{skillNameById[s.skill_id] ?? s.skill_id}</span>
+            <Link className="text-gray-700 underline" to={`/student/skills/${s.skill_id}`}>{s.skill_name}</Link>
             <div className="flex items-center gap-2">
               <div className="w-32 h-2 bg-gray-100 rounded-full overflow-hidden">
                 <div className="h-full bg-gray-900" style={{ width: `${s.estimated_level * 100}%` }} />

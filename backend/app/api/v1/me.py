@@ -1,5 +1,6 @@
 """The signed-in user's own data: notifications and privacy controls."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,8 @@ from app.models.users import User
 from app.services.audit import audit
 from app.services.evidence.estimator import recalculate_all_skills_for_student
 from app.services.storage.service import get_storage_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -82,7 +85,7 @@ def _delete_file(doc: Document) -> None:
     try:
         get_storage_service().backend.path_for(doc.storage_key).unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.warning("could not delete stored file %s", doc.storage_key, exc_info=True)
 
 
 @router.delete("/resume")

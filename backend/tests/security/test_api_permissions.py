@@ -90,3 +90,38 @@ async def test_platform_admin_cannot_be_self_registered(client):
     r = await client.post("/auth/signup", json={"email": "x-admin@example.com", "password": "password123",
                                                 "full_name": "x", "role": "PLATFORM_ADMIN"})
     assert r.status_code == 400 and "cannot be self-registered" in r.text
+
+
+@pytest.mark.asyncio
+async def test_deactivated_skill_is_not_offered_in_search(client):
+    from app.models.skills import Skill, SkillAlias
+    from tests.factories import uniq
+
+    async with AsyncSessionLocal() as db:
+        _, hr = await make_user(db, UserRole.RECRUITER)
+        name = uniq("Retired Skill")
+        sk = Skill(canonical_name=name, category="x", is_active=False)
+        db.add(sk)
+        await db.flush()
+        db.add(SkillAlias(skill_id=sk.id, alias=name.lower() + "-alias", alias_normalized=name.lower() + "-alias"))
+        await db.commit()
+    assert (await client.get("/skills", params={"q": name}, headers=hr)).json() == []
+    assert (await client.get("/skills", params={"q": name.lower() + "-alias"}, headers=hr)).json() == []
+    assert "Go" in [s["canonical_name"] for s in (await client.get("/skills", params={"q": "golang"}, headers=hr)).json()]
+
+
+@pytest.mark.asyncio
+async def test_deactivated_user_is_locked_out(client):
+    async with AsyncSessionLocal() as db:
+        admin, ha = await make_user(db, UserRole.PLATFORM_ADMIN)
+        victim, hv = await make_user(db, UserRole.RECRUITER)
+        _, hs = await make_user(db, UserRole.STUDENT)
+        await db.commit()
+    assert (await client.get("/auth/me", headers=hv)).status_code == 200
+    assert (await client.patch(f"/admin/users/{victim.id}", headers=hs, json={"is_active": False})).status_code == 403
+    assert (await client.patch(f"/admin/users/{admin.id}", headers=ha, json={"is_active": False})).status_code == 400
+    assert (await client.patch(f"/admin/users/{victim.id}", headers=ha, json={"is_active": False})).status_code == 200
+    assert (await client.get("/auth/me", headers=hv)).status_code == 401  # existing token stops working
+    assert (await client.get("/jobs", headers=hv)).status_code == 401
+    assert (await client.patch(f"/admin/users/{victim.id}", headers=ha, json={"is_active": True})).status_code == 200
+    assert (await client.get("/auth/me", headers=hv)).status_code == 200
