@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
@@ -34,6 +32,7 @@ services:
       - hireai_qdrant_data:/qdrant/storage
 
   judge0-db:
+    profiles: ["judge0"]  # opt-in: ~2.3 GB RAM; needs a cgroup-v1 Linux host to execute code
     image: postgres:13
     container_name: hireai_judge0_db
     environment:
@@ -46,6 +45,7 @@ services:
       - hireai_judge0_pg:/var/lib/postgresql/data
 
   judge0-redis:
+    profiles: ["judge0"]  # opt-in: ~2.3 GB RAM; needs a cgroup-v1 Linux host to execute code
     image: redis:7
     container_name: hireai_judge0_redis
     command: ["redis-server", "--requirepass", "judge0redis"]
@@ -53,6 +53,7 @@ services:
       - "6381:6379"
 
   judge0-server:
+    profiles: ["judge0"]  # opt-in: ~2.3 GB RAM; needs a cgroup-v1 Linux host to execute code
     image: judge0/judge0:1.13.1
     container_name: hireai_judge0_server
     privileged: true
@@ -71,6 +72,7 @@ services:
       - judge0-redis
 
   judge0-workers:
+    profiles: ["judge0"]  # opt-in: ~2.3 GB RAM; needs a cgroup-v1 Linux host to execute code
     image: judge0/judge0:1.13.1
     container_name: hireai_judge0_workers
     privileged: true
@@ -88,6 +90,7 @@ services:
       - judge0-redis
 
   celery-worker:
+    profiles: ["containerized-worker"]  # local dev runs Celery natively (see docs/LOCAL_SETUP.md)
     build:
       context: ./backend
     container_name: hireai_celery_worker

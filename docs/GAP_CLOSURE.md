@@ -30,32 +30,48 @@ column is updated as each gap closes.
 | Requirement | Current status (at audit) | Evidence / location | Missing work | Implementation status | Verification test |
 |---|---|---|---|---|---|
 | Core vertical (JD→match→roadmap) | DONE | commit `f15c410`, pass-1 e2e trace | none | DONE | `tests/e2e/run_full_scenario.py` (fresh data) |
-| BGE-M3 embeddings executed | MISSING | `services/ai_gateway/embeddings.py` never run | load once, embed chunks/queries | — | `tests/integration/test_rag_pipeline.py` |
-| Reranker service | PARTIAL | `rerank()` fn, never run | `RerankerService.rerank(query, candidates, top_n)` over retrieved candidates only | — | same |
-| Knowledge source model w/ provenance | MISSING | no table | `knowledge_sources` + `knowledge_chunks` tables, statuses, content hash | — | same |
-| Knowledge Agent (real PydanticAI) | MISSING | plain function | Agent with get_skill/register/fetch/extract/chunk/embed/store/mark_ready tools | — | `tests/agents/test_agents.py` |
-| RAG → Qwen grounded output w/ provenance | MISSING | — | retrieve→rerank→generate w/ `source_refs` | — | `test_rag_pipeline.py` |
-| Qdrant query API | BROKEN | `vector_store.search` uses removed `.search` | port to `query_points` | — | same |
-| Tenant-safe Qdrant filters (OR logic) | PARTIAL | AND-only `must` filter | `should` of (public) OR (private AND org) | — | `tests/security/test_tenant_isolation.py` |
-| Qdrant payload indexes | MISSING | — | index organization_id, institution_id, visibility, skill_ids, document_id, source_type | — | inspect collection info in test |
-| Cross-tenant API security | PARTIAL | leaks listed above | membership checks on every org-scoped route | — | `test_tenant_isolation.py` |
-| Question lifecycle incl. ACTIVE/REJECTED | PARTIAL | approve/reject/retire exist, no activate/validate/promote; approve auto-publishes AI questions | explicit transitions, separate admin-only promote-to-platform | — | `tests/test_question_governance.py` |
-| Duplicate detection via embeddings | MISSING | — | embedding similarity check before insert | — | same |
-| QB import: manual/paste/CSV/JSON | PARTIAL | JSON body import only | CSV + JSON file upload, paste, rubric gen if missing | — | same |
-| Learning resources | MISSING | table empty | 50–100 curated official resources | — | `tests/test_career.py` |
-| Career roadmap w/ real resource IDs | PARTIAL | resources null | retrieval + multi-resource steps | — | same |
-| Taxonomy ≥300 skills | PARTIAL | 220 skills | expand + aliases + relationships | — | `tests/test_skill_normalizer.py` |
-| faster-whisper STT | MISSING | not wired | `SpeechToTextService` + endpoint + frontend recorder | — | `tests/integration/test_speech.py` |
-| 4 real PydanticAI agents | MISSING | see above | real tools, typed deps/output, agent_run logging | — | `tests/agents/test_agents.py` |
-| Interview prioritization | DONE (deterministic) | `services/interviews/selector.py` | tests for high-confidence deprioritization | — | `tests/test_interview_selector.py` |
-| Celery idempotency | PARTIAL | JD task deletes unconfirmed rows first; resume/evidence/generation not idempotent | unique keys + upserts | — | `tests/integration/test_idempotency.py` |
-| Audit events | PARTIAL | 1 action logged | all listed actions | — | `tests/test_audit.py` |
-| AI run logging | PARTIAL | JD only | log inside the gateway for every call | — | same |
-| Agent run logging | PARTIAL | assessment only | all four agents | — | `test_agents.py` |
-| Admin portal UI | PARTIAL | counts + run lists only | skills, questions, knowledge, runs, failed jobs, audit screens | — | browser check |
-| Institution portal UI | PARTIAL | industry demand only | roster, filters, heatmap, gaps, funnel | — | browser check |
-| Application pipeline UI | PARTIAL | status badge only | recruiter actions + history, student timeline | — | browser + `test_application_state_machine.py` |
-| Notifications | MISSING | table only | writes on events + UI | — | `tests/test_notifications.py` |
-| Evidence/match explainability UI | PARTIAL | dashboard bars only | skill drilldown, recruiter match detail | — | browser check |
-| Privacy/data export/delete | MISSING | — | `GET /me/data`, delete resume/transcripts, doc | — | `tests/test_privacy.py` |
-| Frontend quality (UUIDs, empty/error states) | PARTIAL | several raw UUIDs | pass over all portals | — | browser check |
+| BGE-M3 embeddings executed | MISSING | `services/ai_gateway/embeddings.py` never run | load once, embed chunks/queries | DONE | `tests/integration/test_rag_pipeline.py` |
+| Reranker service | PARTIAL | `rerank()` fn, never run | `RerankerService.rerank(query, candidates, top_n)` over retrieved candidates only | DONE | same |
+| Knowledge source model w/ provenance | MISSING | no table | `knowledge_sources` + `knowledge_chunks` tables, statuses, content hash | DONE | same |
+| Knowledge Agent (real PydanticAI) | MISSING | plain function | Agent with get_skill/register/fetch/extract/chunk/embed/store/mark_ready tools | DONE | `tests/agents/test_agents.py` |
+| RAG → Qwen grounded output w/ provenance | MISSING | DONE | retrieve→rerank→generate w/ `source_refs` | DONE | `test_rag_pipeline.py` |
+| Qdrant query API | BROKEN | `vector_store.search` uses removed `.search` | port to `query_points` | DONE | same |
+| Tenant-safe Qdrant filters (OR logic) | PARTIAL | AND-only `must` filter | `should` of (public) OR (private AND org) | DONE | `tests/security/test_tenant_isolation.py` |
+| Qdrant payload indexes | MISSING | DONE | index organization_id, institution_id, visibility, skill_ids, document_id, source_type | DONE | inspect collection info in test |
+| Cross-tenant API security | PARTIAL | leaks listed above | membership checks on every org-scoped route | DONE | `test_tenant_isolation.py` |
+| Question lifecycle incl. ACTIVE/REJECTED | PARTIAL | approve/reject/retire exist, no activate/validate/promote; approve auto-publishes AI questions | explicit transitions, separate admin-only promote-to-platform | DONE | `tests/test_question_governance.py` |
+| Duplicate detection via embeddings | MISSING | DONE | embedding similarity check before insert | DONE | same |
+| QB import: manual/paste/CSV/JSON | PARTIAL | JSON body import only | CSV + JSON file upload, paste, rubric gen if missing | DONE | same |
+| Learning resources | MISSING | table empty | 50–100 curated official resources | DONE | `tests/test_career.py` |
+| Career roadmap w/ real resource IDs | PARTIAL | resources null | retrieval + multi-resource steps | DONE | same |
+| Taxonomy ≥300 skills | PARTIAL | 220 skills | expand + aliases + relationships | DONE | `tests/test_skill_normalizer.py` |
+| faster-whisper STT | MISSING | not wired | `SpeechToTextService` + endpoint + frontend recorder | DONE | `tests/integration/test_speech.py` |
+| 4 real PydanticAI agents | MISSING | see above | real tools, typed deps/output, agent_run logging | DONE | `tests/agents/test_agents.py` |
+| Interview prioritization | DONE (deterministic) | `services/interviews/selector.py` | tests for high-confidence deprioritization | DONE | `tests/test_interview_selector.py` |
+| Celery idempotency | PARTIAL | JD task deletes unconfirmed rows first; resume/evidence/generation not idempotent | unique keys + upserts | DONE | `tests/integration/test_idempotency.py` |
+| Audit events | PARTIAL | 1 action logged | all listed actions | DONE | `tests/test_audit.py` |
+| AI run logging | PARTIAL | JD only | log inside the gateway for every call | DONE | same |
+| Agent run logging | PARTIAL | assessment only | all four agents | DONE | `test_agents.py` |
+| Admin portal UI | PARTIAL | counts + run lists only | skills, questions, knowledge, runs, failed jobs, audit screens | DONE | browser check |
+| Institution portal UI | PARTIAL | industry demand only | roster, filters, heatmap, gaps, funnel | DONE | browser check |
+| Application pipeline UI | PARTIAL | status badge only | recruiter actions + history, student timeline | DONE | browser + `test_application_state_machine.py` |
+| Notifications | MISSING | table only | writes on events + UI | DONE | `tests/test_notifications.py` |
+| Evidence/match explainability UI | PARTIAL | dashboard bars only | skill drilldown, recruiter match detail | DONE | browser check |
+| Privacy/data export/delete | MISSING | DONE | `GET /me/data`, delete resume/transcripts, doc | DONE | `tests/test_privacy.py` |
+| Frontend quality (UUIDs, empty/error states) | PARTIAL | several raw UUIDs | pass over all portals | DONE | browser check |
+
+
+## Pass 3 — router, cost control, RAM (2026-09-28)
+| Requirement | Status | Evidence |
+|---|---|---|
+| `.env` audited without printing secrets | DONE | keys reported configured/missing only; duplicate `LLM_PROVIDER` removed; Ollama URL corrected to native 11435 |
+| Model ids verified against providers | DONE | Groq `/models` lists `openai/gpt-oss-120b`; OpenAI `/v1/models/{id}` 200 for gpt-6-luna/sol and gpt-5.6-luna/sol; user chose gpt-6-* (half price) |
+| Task-aware router | DONE | `providers.TASK_POLICY`, test_router B, C, H |
+| Budget governor (soft/hard/reserve) | DONE | test_router F, G, G2; admin endpoint |
+| No retry storms / correct fallback classes | DONE | test_router D, E, J, schema-retry test |
+| ai_runs usage + cost | DONE | test_cost_is_recorded…, E2E cost report |
+| Agent request limits | DONE | runaway-loop test; live runs within 6 |
+| Luna as agent fallback | DONE (bug found + fixed) | gpt-6-luna needs `reasoning_effort: none` with tools; forced live check passed |
+| RAM reduction | DONE | Judge0 off by default (−2.3 GB), BGE fp16 (5.34 → 2.32 GB), no resident generative model |
+| MLX experiment | REMOVED per instruction | venv + model files deleted |
+| Admin self-registration hole | FIXED | signup refuses PLATFORM_ADMIN; `python -m app.cli create-admin` |

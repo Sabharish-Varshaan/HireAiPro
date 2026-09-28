@@ -39,6 +39,14 @@ class AIRun(Base, UUIDPk, TimestampMixin):
     ended_at: Mapped[str | None] = mapped_column(String, nullable=True)
     input_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     output_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fallback_used: Mapped[bool | None] = mapped_column(nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_call_success: Mapped[bool | None] = mapped_column(nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class AgentRun(Base, UUIDPk, TimestampMixin):

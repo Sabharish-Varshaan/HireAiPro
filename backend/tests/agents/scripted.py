@@ -22,11 +22,16 @@ def scripted(steps: list[Step]) -> FunctionModel:
                 last = part.content
                 if hasattr(last, "model_dump"):
                     last = last.model_dump(mode="json")
-        name, args = steps[min(state["i"], len(steps) - 1)](last)
+        step = steps[min(state["i"], len(steps) - 1)]
         state["i"] += 1
-        if name == "__final__":
-            name = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=name, args=json.dumps(args, default=str))])
+        calls = step if isinstance(step, list) else [step]  # a list = several tool calls in ONE response
+        parts = []
+        for c in calls:
+            name, args = c(last)
+            if name == "__final__":
+                name = info.output_tools[0].name
+            parts.append(ToolCallPart(tool_name=name, args=json.dumps(args, default=str)))
+        return ModelResponse(parts=parts)
 
     return FunctionModel(fn)
 

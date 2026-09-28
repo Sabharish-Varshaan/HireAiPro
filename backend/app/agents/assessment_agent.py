@@ -12,10 +12,10 @@ import uuid
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.runtime import ToolLog, build_agent, run_agent
+from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent
 from app.models.assessments import Assessment
 from app.models.enums import QuestionStatus as QS, QuestionType
 from app.models.jobs import Job
@@ -62,20 +62,30 @@ class AssessmentDeps:
 
 
 INSTRUCTIONS = """You assemble a hiring assessment from confirmed job competencies.
-1. call get_job_competencies, then build_assessment_blueprint.
-2. For EVERY skill_index in the blueprint, in order:
-   search_company_questions(skill_index); if slots remain, search_platform_questions(skill_index);
-   if slots still remain, retrieve_knowledge(skill_index) then generate_missing_question(skill_index).
-3. Optionally call validate_question on any generated question id you want to double-check.
-4. Finally call create_assessment exactly once and return the AssessmentPlan it gives you."""
+You have a small request budget: put independent tool calls (e.g. the searches for several skills) in the SAME response.
+1. Call build_assessment_blueprint (it loads the confirmed competencies itself).
+2. Call generate_missing_question with an empty list: for every skill it first reuses company, then
+   platform questions, and only generates what's still missing. You can instead call
+   search_company_questions / search_platform_questions / retrieve_knowledge first if you want to
+   inspect coverage — all take a list of skill indexes (empty = all) and run in the order called.
+3. Optionally call validate_question on a generated question id.
+4. Finally call create_assessment exactly once, then reply with a one-line confirmation."""
 
-assessment_agent = build_agent(AssessmentPlan, AssessmentDeps, INSTRUCTIONS)
+assessment_agent = build_agent(AssessmentPlan, AssessmentDeps, INSTRUCTIONS, "assessment_agent")
 
 
 def _w(d: AssessmentDeps, skill_index: int) -> SkillWork:
     if not d.work:
-        raise ValueError("call build_assessment_blueprint first")
+        raise ModelRetry("call build_assessment_blueprint first")
+    if not 0 <= skill_index < len(d.work):
+        raise ModelRetry(f"skill_index must be between 0 and {len(d.work) - 1}")
     return d.work[skill_index]
+
+
+def _indexes(d: AssessmentDeps, skill_indexes: list[int] | None) -> list[int]:
+    if not d.work:
+        raise ModelRetry("call build_assessment_blueprint first")
+    return list(range(len(d.work))) if not skill_indexes else skill_indexes
 
 
 def _summary(w: SkillWork) -> dict:
@@ -116,9 +126,13 @@ async def build_assessment_blueprint(ctx: RunContext[AssessmentDeps]) -> list[di
 
 
 @assessment_agent.tool
-async def search_company_questions(ctx: RunContext[AssessmentDeps], skill_index: int) -> dict:
-    """Fill open slots for this skill from the company's own private question bank."""
-    d, w = ctx.deps, _w(ctx.deps, skill_index)
+async def search_company_questions(ctx: RunContext[AssessmentDeps], skill_indexes: list[int] | None = None) -> list[dict]:
+    """Fill open slots from the company's own private question bank. Pass the skill indexes (empty = all skills)."""
+    return [await _company(ctx.deps, i) for i in _indexes(ctx.deps, skill_indexes)]
+
+
+async def _company(d: AssessmentDeps, skill_index: int) -> dict:
+    w = _w(d, skill_index)
     for qtype in list(w.need):
         n = w.remaining(qtype)
         if n > 0:
@@ -131,9 +145,13 @@ async def search_company_questions(ctx: RunContext[AssessmentDeps], skill_index:
 
 
 @assessment_agent.tool
-async def search_platform_questions(ctx: RunContext[AssessmentDeps], skill_index: int) -> dict:
-    """Fill remaining slots from approved platform-wide questions."""
-    d, w = ctx.deps, _w(ctx.deps, skill_index)
+async def search_platform_questions(ctx: RunContext[AssessmentDeps], skill_indexes: list[int] | None = None) -> list[dict]:
+    """Fill remaining slots from approved platform-wide questions (empty = all skills)."""
+    return [await _platform(ctx.deps, i) for i in _indexes(ctx.deps, skill_indexes)]
+
+
+async def _platform(d: AssessmentDeps, skill_index: int) -> dict:
+    w = _w(d, skill_index)
     for qtype in list(w.need):
         n = w.remaining(qtype)
         if n > 0:
@@ -146,9 +164,13 @@ async def search_platform_questions(ctx: RunContext[AssessmentDeps], skill_index
 
 
 @assessment_agent.tool
-async def retrieve_knowledge(ctx: RunContext[AssessmentDeps], skill_index: int) -> dict:
-    """Check how much approved knowledge exists to ground generated questions for this skill."""
-    d, w = ctx.deps, _w(ctx.deps, skill_index)
+async def retrieve_knowledge(ctx: RunContext[AssessmentDeps], skill_indexes: list[int] | None = None) -> list[dict]:
+    """Check how much approved knowledge exists to ground generated questions (empty = all skills)."""
+    return [await _knowledge(ctx.deps, i) for i in _indexes(ctx.deps, skill_indexes)]
+
+
+async def _knowledge(d: AssessmentDeps, skill_index: int) -> dict:
+    w = _w(d, skill_index)
     docs = gen.retrieve_knowledge(w.alloc.skill_name, w.alloc.skill_id, d.job.organization_id, QuestionType.TECHNICAL)
     w.knowledge_chunks = len(docs)
     d.log.record("retrieve_knowledge", skill_index=skill_index, chunks=len(docs))
@@ -157,6 +179,12 @@ async def retrieve_knowledge(ctx: RunContext[AssessmentDeps], skill_index: int) 
 
 async def _generate_for(d: AssessmentDeps, skill_index: int) -> dict:
     w = _w(d, skill_index)
+    # Never generate what the question banks already cover: run the searches
+    # the agent skipped for this skill first.
+    if not w.company_searched:
+        await _company(d, skill_index)
+    if not w.platform_searched:
+        await _platform(d, skill_index)
     created = []
     for qtype in list(w.need):
         slot = 0
@@ -179,11 +207,14 @@ async def _generate_for(d: AssessmentDeps, skill_index: int) -> dict:
 
 
 @assessment_agent.tool
-async def generate_missing_question(ctx: RunContext[AssessmentDeps], skill_index: int) -> dict:
-    """Generate, validate and index questions for this skill's remaining slots (RAG-grounded when knowledge exists)."""
-    result = await _generate_for(ctx.deps, skill_index)
-    ctx.deps.log.record("generate_missing_question", skill_index=skill_index, created=len(result["created_question_ids"]))
-    return result
+async def generate_missing_question(ctx: RunContext[AssessmentDeps], skill_indexes: list[int] | None = None) -> list[dict]:
+    """Generate, validate and index questions for remaining slots, RAG-grounded when knowledge exists (empty = all skills)."""
+    out = []
+    for i in _indexes(ctx.deps, skill_indexes):
+        result = await _generate_for(ctx.deps, i)
+        ctx.deps.log.record("generate_missing_question", skill_index=i, created=len(result["created_question_ids"]))
+        out.append(result)
+    return out
 
 
 @assessment_agent.tool
@@ -235,7 +266,7 @@ async def run_assessment_agent(
     deps = AssessmentDeps(db=db, job=job, title=title, actor_user_id=actor_user_id, log=log)
 
     async def llm() -> AssessmentPlan:
-        await assessment_agent.run(f"Build the assessment for job '{job.title}'.", deps=deps)
+        await run_llm_agent(assessment_agent, "assessment_agent", f"Build the assessment for job '{job.title}'.", deps, log)
         skipped = [w.alloc.skill_name for w in deps.work if not w.company_searched]
         if not deps.work or skipped or deps.assessment is None:
             raise RuntimeError(f"agent skipped skills or never created the assessment: {skipped}")
@@ -274,7 +305,7 @@ async def run_assessment_agent(
     plan = await run_agent(
         agent_type="assessment_agent", task=f"build_assessment:{job.id}", context_type="job", context_id=job.id,
         tool_log=log, run_llm=llm if use_llm else _disabled, fallback=fallback,
-        required_tools={"get_job_competencies", "build_assessment_blueprint", "create_assessment"},
+        required_tools={"build_assessment_blueprint", "create_assessment"},
     )
     await db.commit()
     return plan

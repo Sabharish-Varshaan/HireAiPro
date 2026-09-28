@@ -58,6 +58,7 @@ async def submit_code(payload: CodingSubmitRequest, user: User = Depends(require
             judge0_token=r.get("token"), judge0_status=(r.get("status") or {}).get("description"),
         ))
         visible.append({"index": idx, "passed": ok, "status": (r.get("status") or {}).get("description"),
+                        "execution_backend": r.get("execution_backend", "judge0"), "fallback_reason": r.get("fallback_reason"),
                         "stderr": (r.get("stderr") or r.get("compile_output") or "")[:500] or None})
 
     submission.passed_count = passed

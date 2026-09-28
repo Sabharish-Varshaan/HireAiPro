@@ -3,15 +3,12 @@
 ## Inference
 
 ```
-Hackathon:   FastAPI → AI Gateway → Ollama (local) → Qwen3.5
-Production:  FastAPI → AI Gateway → Load Balancer → vLLM → GPU replicas
+Hackathon:    FastAPI → AI Gateway router → Groq (agents) / OpenAI Luna (simple) / Ollama (offline fallback)
+Early hosted: FastAPI → AI Gateway router → single GPU + vLLM (OpenAI-compatible) as a new provider tier
+Scaled:       FastAPI → AI Gateway router → load-balanced vLLM replicas; embedding + speech as independent workers
 ```
-
-Only `app/services/ai_gateway/gateway.py` needs to change: swap the `httpx` call from Ollama's
-`/api/generate` to an OpenAI-compatible `/v1/chat/completions` against vLLM (vLLM already speaks
-that protocol), and `app/agents/model_factory.py`'s `OpenAIProvider(base_url=...)` just points at
-the new endpoint. No service or agent above the gateway references Ollama, model names, or
-Ollama-specific fields (`think`, `num_predict`) — those live entirely inside `gateway.py`.
+Adding vLLM is a new `Provider` entry (OpenAI-compatible, same `_call` path) and a `TASK_POLICY` edit;
+no business code changes.
 
 ## Embeddings / reranking
 

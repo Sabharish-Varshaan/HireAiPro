@@ -18,13 +18,44 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7
 
-    LLM_PROVIDER: str = "ollama"
-    LLM_BASE_URL: str = "http://localhost:11434"
-    LLM_MODEL: str = "qwen3.5:4b"
+    # ---- LLM routing (see docs/AI_ROUTING_AND_COST.md) ------------------
+    # "router" = task-aware routing across groq/openai/ollama. LOCAL_ONLY forces Ollama.
+    LLM_PROVIDER: str = "router"
+    LOCAL_ONLY: bool = False
+    LLM_PRIMARY_PROVIDER: str = "groq"          # complex/agentic tasks
+    LLM_CHEAP_PROVIDER: str = "openai"          # simple structured tasks
+    LLM_LOCAL_FALLBACK_PROVIDER: str = "ollama"  # offline / emergency
     LLM_THINK: bool = False
+
+    GROQ_API_KEY: str = ""
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_CHEAP_MODEL: str = "gpt-6-luna"
+    OPENAI_ESCALATION_MODEL: str = "gpt-6-sol"
+
+    OLLAMA_BASE_URL: str = "http://localhost:11435"
+    OLLAMA_MODEL: str = "qwen3.5:4b"
+
+    # Cost governor. Spend is the application's own tracked estimate from
+    # ai_runs, not the authoritative OpenAI account balance.
+    OPENAI_DAILY_SOFT_LIMIT_USD: float = 0.25
+    OPENAI_DAILY_HARD_LIMIT_USD: float = 0.35
+    OPENAI_STARTING_BUDGET_USD: float = 6.50
+    OPENAI_RESERVE_USD: float = 3.00
+
+    LLM_MAX_RETRIES: int = 1
+    LLM_MAX_AGENT_TURNS: int = 6
+    LLM_TIMEOUT_SECONDS: int = 60
+    LLM_OLLAMA_TIMEOUT_SECONDS: int = 300
+    LLM_MAX_OUTPUT_TOKENS: int = 1536
+    LLM_CONTEXT_CHARS: int = 12000
 
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    EMBEDDING_FP16: bool = True
 
     WHISPER_MODEL: str = "small.en"
     WHISPER_DEVICE: str = "cpu"

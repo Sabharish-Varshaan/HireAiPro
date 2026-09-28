@@ -17,7 +17,7 @@ from pydantic_ai import RunContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.runtime import ToolLog, build_agent, run_agent
+from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent, tool_uuid
 from app.models.career import LearningPath, LearningPathStep, LearningResource
 from app.models.evidence import StudentSkill
 from app.models.jobs import Job
@@ -31,6 +31,10 @@ class PlannedStep(BaseModel):
     skill_id: str
     rationale: str
     resource_ids: list[str] = Field(default_factory=list)
+    resource_id: str | None = None  # models sometimes send a single id; folded into resource_ids
+
+    def ids(self) -> list[str]:
+        return self.resource_ids + ([self.resource_id] if self.resource_id else [])
 
 
 @dataclass
@@ -46,15 +50,16 @@ class CareerDeps:
 
 
 INSTRUCTIONS = """You are a career coach building a learning roadmap toward a target job.
-1. Call get_target_job, get_student_skills, then calculate_skill_gaps.
-2. For each gap skill call get_skill_prerequisites, and search_learning_resources for each
-   gap and any prerequisite the student lacks.
-3. Call save_learning_path ONCE with steps ordered prerequisites-first, each with a
+You have a small request budget: put independent tool calls in the SAME response.
+1. Call calculate_skill_gaps (it already includes each gap's prerequisites and stored resources).
+   get_target_job / get_student_skills / get_skill_prerequisites / search_learning_resources are
+   available if you need more detail (e.g. resources for a prerequisite).
+2. Call save_learning_path ONCE with steps ordered prerequisites-first, each with a
    one-sentence rationale and resource_ids chosen ONLY from search_learning_resources
    results, plus a 2-3 sentence encouraging summary. Never invent resources.
-4. Return the CareerRoadmap that save_learning_path returns."""
+3. Then reply with a one-line confirmation."""
 
-career_agent = build_agent(CareerRoadmap, CareerDeps, INSTRUCTIONS)
+career_agent = build_agent(CareerRoadmap, CareerDeps, INSTRUCTIONS, "career_agent")
 
 
 @career_agent.tool
@@ -84,18 +89,29 @@ async def calculate_skill_gaps(ctx: RunContext[CareerDeps]) -> list[dict]:
     d = ctx.deps
     d.gaps = await gap_service.calculate_skill_gaps(d.db, d.student_id, d.job.id)
     d.log.record("calculate_skill_gaps", gaps=len(d.gaps))
-    return [
-        {"skill_id": str(g["skill_id"]), "skill": g["skill_name"], "current": round(g["current_level"], 2),
-         "required": g["required_level"], "gap": round(g["gap"], 2)}
-        for g in d.gaps
-    ]
+    # Compact on purpose: this result is re-sent on every later model turn,
+    # so it's capped (top 8 gaps, <=2 prerequisites/resources each).
+    out = []
+    for g in d.gaps[:8]:
+        sid = str(g["skill_id"])
+        pre = (await gap_service.get_prerequisites(d.db, g["skill_id"]))
+        d.prereqs[sid] = [str(p.id) for p in pre]
+        out.append({
+            "id": sid, "skill": g["skill_name"], "gap": round(g["gap"], 2),
+            "resources": [str(r.id) for r in (await _resources(d, sid))[:2]],
+            "prereqs": [{"id": str(p.id), "skill": p.canonical_name,
+                         "resources": [str(r.id) for r in (await _resources(d, str(p.id)))[:2]]} for p in pre[:2]],
+        })
+    for g in d.gaps[8:]:
+        d.prereqs[str(g["skill_id"])] = [str(p.id) for p in await gap_service.get_prerequisites(d.db, g["skill_id"])]
+    return out
 
 
 @career_agent.tool
 async def get_skill_prerequisites(ctx: RunContext[CareerDeps], skill_id: str) -> list[dict]:
     """Prerequisite skills from the taxonomy graph."""
     d = ctx.deps
-    pre = await gap_service.get_prerequisites(d.db, uuid.UUID(skill_id))
+    pre = await gap_service.get_prerequisites(d.db, tool_uuid(skill_id, "skill_id"))
     d.prereqs[skill_id] = [str(p.id) for p in pre]
     d.log.record("get_skill_prerequisites", skill_id=skill_id, count=len(pre))
     return [{"skill_id": str(p.id), "skill": p.canonical_name} for p in pre]
@@ -107,7 +123,7 @@ async def _resources(d: CareerDeps, skill_id: str) -> list[LearningResource]:
             (
                 await d.db.scalars(
                     select(LearningResource)
-                    .where(LearningResource.skill_id == uuid.UUID(skill_id), LearningResource.status == "ACTIVE")
+                    .where(LearningResource.skill_id == tool_uuid(skill_id, "skill_id"), LearningResource.status == "ACTIVE")
                     .order_by(LearningResource.difficulty)
                 )
             ).all()
@@ -116,12 +132,15 @@ async def _resources(d: CareerDeps, skill_id: str) -> list[LearningResource]:
 
 
 @career_agent.tool
-async def search_learning_resources(ctx: RunContext[CareerDeps], skill_id: str) -> list[dict]:
-    """Curated learning resources stored for this skill."""
-    rows = await _resources(ctx.deps, skill_id)
-    ctx.deps.log.record("search_learning_resources", skill_id=skill_id, found=len(rows))
-    return [{"resource_id": str(r.id), "title": r.title, "provider": r.provider, "type": r.resource_type,
-             "difficulty": r.difficulty} for r in rows]
+async def search_learning_resources(ctx: RunContext[CareerDeps], skill_ids: list[str]) -> dict:
+    """Curated learning resources stored for each of these skills."""
+    out = {}
+    for sid in skill_ids:
+        rows = await _resources(ctx.deps, sid)
+        out[sid] = [{"resource_id": str(r.id), "title": r.title, "provider": r.provider, "type": r.resource_type,
+                     "difficulty": r.difficulty} for r in rows]
+    ctx.deps.log.record("search_learning_resources", skills=len(skill_ids), found=sum(len(v) for v in out.values()))
+    return out
 
 
 async def _save(d: CareerDeps, planned: list[PlannedStep], summary: str) -> CareerRoadmap:
@@ -133,7 +152,7 @@ async def _save(d: CareerDeps, planned: list[PlannedStep], summary: str) -> Care
             (await d.db.scalars(select(StudentSkill).where(StudentSkill.student_id == d.student_id))).all()}
 
     order: list[str] = []
-    for st in planned:
+    for st in planned:  # anything not a known gap/prerequisite id (incl. malformed ids) is dropped
         if st.skill_id in allowed and st.skill_id not in order:
             order.append(st.skill_id)
     for g in gap_ids:  # never silently drop a gap the model forgot
@@ -149,7 +168,7 @@ async def _save(d: CareerDeps, planned: list[PlannedStep], summary: str) -> Care
             fixed.append(sid)
 
     rationale = {st.skill_id: st.rationale for st in planned}
-    chosen = {st.skill_id: st.resource_ids for st in planned}
+    chosen = {st.skill_id: st.ids() for st in planned}
     steps: list[CareerStep] = []
     for sid in fixed:
         valid = {str(r.id): r for r in await _resources(d, sid)}
@@ -199,7 +218,7 @@ async def build_career_roadmap(
     deps = CareerDeps(db=db, student_id=student_id, job=job, log=log)
 
     async def llm() -> CareerRoadmap:
-        await career_agent.run(f"Build my learning roadmap toward '{job.title}'.", deps=deps)
+        await run_llm_agent(career_agent, "career_agent", f"Build my learning roadmap toward '{job.title}'.", deps, log)
         if deps.saved is None:
             raise RuntimeError("agent never called save_learning_path")
         return deps.saved

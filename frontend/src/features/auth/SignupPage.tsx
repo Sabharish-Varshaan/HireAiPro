@@ -7,7 +7,6 @@ const ROLES = [
   { value: "STUDENT", label: "Student" },
   { value: "RECRUITER", label: "Recruiter / Company" },
   { value: "INSTITUTION_ADMIN", label: "Institution Admin" },
-  { value: "PLATFORM_ADMIN", label: "Platform Admin" },
 ];
 
 export default function SignupPage() {

@@ -83,3 +83,10 @@ async def test_institution_isolation(client):
         assert (await client.get(path, headers=hy)).status_code == 200, path
     assert (await client.get(f"/evidence/students/{st_y.id}/skills", headers=hx)).status_code == 403
     assert (await client.get(f"/evidence/students/{st_y.id}/skills", headers=hy)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_be_self_registered(client):
+    r = await client.post("/auth/signup", json={"email": "x-admin@example.com", "password": "password123",
+                                                "full_name": "x", "role": "PLATFORM_ADMIN"})
+    assert r.status_code == 400 and "cannot be self-registered" in r.text

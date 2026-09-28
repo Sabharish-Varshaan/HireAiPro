@@ -1,85 +1,81 @@
-# Local Setup
+# Local Setup (Apple Silicon, 16 GB)
 
 ## Prerequisites
+Python 3.12 (not 3.14 — ML deps), Node 20+, Docker Desktop, Ollama (native install, optional).
 
-- Python 3.12 (3.14 currently breaks some ML deps — use 3.12)
-- Node 20+
-- Docker (Postgres, Qdrant, Valkey, Judge0)
-- [Ollama](https://ollama.com) installed natively (not just in Docker) so it can use Apple
-  Silicon/NVIDIA GPU acceleration — the same model running inside Docker Desktop on macOS is
-  CPU-only and dramatically slower.
-
-## 1. Infra
-
+## One-time setup
 ```bash
-docker compose up -d postgres valkey qdrant judge0-db judge0-redis judge0-server judge0-workers
-```
-
-Ports are intentionally non-default (5435, 6380) to avoid clashing with any other local Postgres/Redis — see `docker-compose.yml`.
-
-## 2. Ollama
-
-```bash
-OLLAMA_HOST=127.0.0.1:11435 ollama serve &     # run natively for GPU acceleration
-OLLAMA_HOST=127.0.0.1:11435 ollama pull qwen3.5:4b
-```
-
-Point `LLM_BASE_URL` at whichever host:port you ran `ollama serve` on.
-
-## 3. Backend
-
-```bash
+docker compose up -d postgres valkey qdrant           # Judge0 is opt-in, see below
 cd backend
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp ../.env.example .env   # adjust ports if you changed docker-compose.yml
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp ../.env.example .env                                # then set JWT_SECRET and optional API keys
 .venv/bin/alembic upgrade head
-.venv/bin/python -m app.services.skills.seed     # seeds the skill taxonomy
-.venv/bin/uvicorn app.main:app --port 8020 --reload
+.venv/bin/python -m app.services.skills.seed           # 491 skills, aliases, relationships
+.venv/bin/python -m app.services.career.seed_resources # verifies every URL before storing
+.venv/bin/python -m app.cli create-admin you@example.com "Your Name"   # admins can't self-register
+cd ../frontend && npm install
 ```
 
-## 4. Celery worker
+## Run (each in its own terminal)
+```bash
+cd backend && .venv/bin/uvicorn app.main:app --port 8020
+cd backend && .venv/bin/celery -A app.workers.celery_app worker --pool=solo \
+    -Q documents,assessments,matching,knowledge,reports,celery --loglevel=info
+cd frontend && npm run dev                              # http://localhost:5173 → proxies /api to :8020
+OLLAMA_HOST=127.0.0.1:11435 ollama serve                # only needed for fallback / Mode C
+```
+Port 8020 because another local app occupies 8010 on this machine. Postgres is on 5435 and Valkey
+on 6380 to avoid clashing with other local instances.
 
+## Run modes
+| Mode | Config | Generation | RAM |
+|---|---|---|---|
+| **A — Recommended dev/demo** | both keys set | Luna for simple tasks, Groq for agents | lowest: no generative model resident |
+| **B — Free-first** | `GROQ_API_KEY` only (or OpenAI soft-capped) | Groq, Ollama fallback | low |
+| **C — Offline** | `LOCAL_ONLY=true`, no keys | Ollama qwen3.5:4b | +~3 GB while the model is loaded (unloads after 2 min idle) |
+
+No mode requires a paid provider. Status: Admin → AI usage, or `GET /api/v1/admin/ai/providers`.
+
+## Memory behaviour (measured on the M4 / 16 GB)
+- BGE-M3 + reranker are lazy singletons, loaded **fp16** on MPS: 2.32 GB per process that uses
+  them (fp32 was 5.34 GB), identical outputs (cosine ≥ 0.9998, same rerank order).
+  faster-whisper `small.en` int8 adds ~0.5 GB, only in the API process, only after the first
+  voice answer.
+- Two processes can hold the embedding models: the API (retrieval, question validation) and the
+  Celery worker (ingestion, generation). Keep the worker at **`--pool=solo`** (one process) so
+  there is never a third copy. `--max-tasks-per-child` isn't available with the solo pool; restart
+  the worker to release memory if needed.
+- Ollama: requests use `keep_alive: 2m`, so qwen3.5:4b leaves memory 2 minutes after its last
+  fallback call. Force-unload: `curl localhost:11435/api/generate -d '{"model":"qwen3.5:4b","keep_alive":0}'`.
+- Judge0 (amd64 under emulation) used **2.3 GB** and can't execute code on this host anyway, so it
+  is behind a Compose profile and off by default.
+
+## Judge0
+```bash
+docker compose --profile judge0 up -d     # opt-in
+```
+On macOS Docker Desktop, Judge0 1.13.x cannot sandbox code: its `isolate` 1.8.1 needs cgroup v1 and
+Docker Desktop's VM is cgroup v2 only (judge0/judge0#514). The coding endpoint then uses a clearly
+labelled local fallback (`execution_backend: "local_fallback"` with the reason) — Python only,
+wall-clock timeout, **no sandbox isolation**. It never claims Judge0 ran. On a Linux host with
+cgroup v1 (or hybrid) Judge0 runs natively and results say `execution_backend: "judge0"`.
+
+## Tests
 ```bash
 cd backend
-.venv/bin/celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+.venv/bin/pytest -q                 # deterministic suite (uses database hireai_test + Qdrant prefix test_)
+.venv/bin/pytest -q -m live         # real models (Groq/OpenAI/Ollama per router); costs fractions of a cent
+.venv/bin/python scripts/e2e_full_scenario.py   # fresh E2E against the running stack + cost report
 ```
-
-`--pool=solo` avoids a macOS + Python 3.12 + billiard prefork/spawn incompatibility
-(`ValueError: not enough values to unpack`) seen with the default prefork pool. On Linux, prefork
-works fine.
-
-## 5. Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev   # http://localhost:5173, proxies /api to :8020
-```
-
-## 6. Judge0
-
-Already started in step 1. Verify: `curl http://localhost:2358/languages`. Judge0's own container
-needs `privileged: true` for its cgroup-based sandboxing — this is Judge0's standard requirement,
-not something specific to this project.
-
-## Test commands
-
-```bash
-cd backend && .venv/bin/pytest
-```
+The test database: `docker exec hireai_postgres psql -U hireai -c "create database hireai_test"`, then
+`DATABASE_URL=postgresql+asyncpg://hireai:hireai@localhost:5435/hireai_test .venv/bin/alembic upgrade head`
+and the two seed commands with the same `DATABASE_URL`.
 
 ## Troubleshooting
-
-- **LLM calls take minutes**: Qwen3 models "think" by default, burning hundreds of tokens on
-  chain-of-thought before answering. The AI Gateway passes `"think": false` to Ollama
-  (`LLM_THINK` env var) — if you still see multi-minute calls, confirm Ollama actually picked up
-  GPU offload (`ollama ps` should show `100%` GPU, not `100%` CPU).
-- **`role "hireai" does not exist` connecting to Postgres on the port you expect**: another
-  Postgres (Homebrew or another project's Docker container) may already be listening on that port
-  and winning the bind on `localhost`. Check with `lsof -iTCP:<port> -sTCP:LISTEN` and change the
-  port in `docker-compose.yml`/`.env` if so.
-- **Celery task fails with `cannot rollback; the transaction is in error state`**: this was a real
-  bug we hit and fixed — asyncpg connections are bound to the event loop that created them, and
-  Celery's prefork/solo pool gives each task its own `asyncio.run()` (a new loop). The shared
-  engine's pool must be disposed after each task; see `app/workers/utils.py::run_async`.
+- **Groq 429 / 413**: free-tier limits. The router cools Groq down and uses Luna; check Admin → AI usage.
+- **`role "hireai" does not exist`**: another Postgres owns the port on `localhost`; `lsof -iTCP:5435 -sTCP:LISTEN`.
+- **Celery `not enough values to unpack`**: macOS prefork/spawn issue — use `--pool=solo`.
+- **Celery `cannot rollback; the transaction is in error state`**: fixed — asyncpg connections are
+  loop-bound; `app/workers/utils.py::run_async` disposes the pool per task.
+- **Slow Ollama**: Qwen3 "thinks" by default; the gateway sends `think:false`. Run Ollama natively
+  (Docker Desktop's Ollama is CPU-only).

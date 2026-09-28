@@ -20,7 +20,7 @@ from pydantic_ai import RunContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.runtime import ToolLog, build_agent, run_agent
+from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent, tool_uuid
 from app.models.enums import QuestionStatus as QS, QuestionType, Visibility
 from app.models.evidence import SkillEvidence
 from app.models.interviews import Interview, InterviewTurn
@@ -46,15 +46,16 @@ class InterviewDeps:
 
 
 INSTRUCTIONS = """You are an adaptive technical interviewer.
+You have a small request budget: put independent tool calls in the SAME response.
 1. Call rank_competencies to see which skills most need evidence.
 2. Optionally call get_job_requirements, get_student_evidence and get_interview_history for context.
 3. Pick ONE skill from the top of the ranking. Call search_question_bank and/or
    retrieve_skill_knowledge for it to ground your question.
 4. Call save_interview_turn with that skill_id, one clear open-ended question (not yes/no,
    not a repeat of an earlier question) and a one-sentence reason.
-5. Return the InterviewDecision. If rank_competencies is empty, return should_continue=false."""
+5. Then reply with a one-line confirmation. If rank_competencies is empty, say so and stop."""
 
-interview_agent = build_agent(InterviewDecision, InterviewDeps, INSTRUCTIONS)
+interview_agent = build_agent(InterviewDecision, InterviewDeps, INSTRUCTIONS, "interview_agent")
 
 
 @interview_agent.tool
@@ -82,7 +83,7 @@ async def get_student_evidence(ctx: RunContext[InterviewDeps], skill_id: str) ->
         await d.db.scalars(
             select(SkillEvidence).where(
                 SkillEvidence.student_id == d.interview.student_id,
-                SkillEvidence.skill_id == uuid.UUID(skill_id),
+                SkillEvidence.skill_id == tool_uuid(skill_id, "skill_id"),
                 SkillEvidence.source_type != "RESUME_CLAIM",
                 SkillEvidence.is_deleted.is_(False),
             )
@@ -117,7 +118,7 @@ async def search_question_bank(ctx: RunContext[InterviewDeps], skill_id: str) ->
     rows = (
         await d.db.scalars(
             select(Question).where(
-                Question.skill_id == uuid.UUID(skill_id),
+                Question.skill_id == tool_uuid(skill_id, "skill_id"),
                 Question.question_type == QuestionType.TECHNICAL,
                 Question.status.in_([QS.VALIDATED.value, QS.APPROVED.value, QS.ACTIVE.value]),
                 (Question.visibility == Visibility.PLATFORM_PUBLIC) | (Question.organization_id == d.job.organization_id),
@@ -134,7 +135,7 @@ async def retrieve_skill_knowledge(ctx: RunContext[InterviewDeps], skill_id: str
     d = ctx.deps
     name = next((c.skill_name for c in d.ranked if str(c.skill_id) == skill_id), "")
     docs = retrieve(f"{name} core concepts", TenantScope(organization_id=d.job.organization_id),
-                    skill_ids=[uuid.UUID(skill_id)], top_k=20, top_n=2)
+                    skill_ids=[tool_uuid(skill_id, "skill_id")], top_k=20, top_n=2)
     d.grounding[skill_id] = to_source_refs(docs)
     d.log.record("retrieve_skill_knowledge", skill_id=skill_id, chunks=len(docs))
     return [x.text[:600] for x in docs]
@@ -189,7 +190,7 @@ async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool
         return None
 
     async def llm() -> InterviewTurn:
-        await interview_agent.run(f"Choose the next question for the '{job.title}' interview.", deps=deps)
+        await run_llm_agent(interview_agent, "interview_agent", f"Choose the next question for the '{job.title}' interview.", deps, log)
         if deps.saved_turn is None:
             raise RuntimeError("agent did not save a turn")
         return deps.saved_turn

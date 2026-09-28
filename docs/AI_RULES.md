@@ -32,3 +32,16 @@ module, it's named so a reviewer can verify it directly.
 | Turn resume claims into verified evidence | `BASE_WEIGHTS[RESUME_CLAIM] == 0.0` in the estimator — resume evidence is stored and shown but mathematically excluded from `estimated_level` |
 | Access another tenant's private content | Every question/document/knowledge query filters by `organization_id`/`visibility`; see `search_existing_questions` |
 | Change application status by itself | State transitions only happen via `PUT /applications/{id}/status`, called by an authenticated human (recruiter or student action), validated against `ALLOWED_TRANSITIONS` |
+
+## Provider routing rules (enforced in `app/services/ai_gateway/providers.py`)
+
+| Rule | Enforced by |
+|---|---|
+| Deterministic work never calls an LLM | those services don't import the gateway |
+| Business code never picks a provider | only `task_type` is passed; `route()` decides |
+| `gpt-6-sol` is never a default | `TASK_POLICY` has it only in `critical_complex_failure`, and only with `escalate=True` under budget (`test_h_*`) |
+| Paid calls stop at the daily hard cap / reserve | `budget.budget_state()` removes OpenAI from every chain (`test_g_*`) |
+| No retry storms | max 1 schema retry per provider; 429 → cool-down + immediate fallthrough (`test_d_*`) |
+| Our bugs are not hidden by switching models | only transport/provider errors advance the chain (`test_j_*`) |
+| Agents can't loop forever | `UsageLimits(request_limit=6)` per run |
+| Remote prompts never include another tenant's content | tenant filter runs before context assembly (`docs/RAG_SECURITY.md`) |

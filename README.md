@@ -20,56 +20,40 @@ are explainable from stored numbers — not hardcoded demo values. See
 
 ## Architecture
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full diagram. In short:
-
 ```
-React/Vite frontend → FastAPI (route → service → repository → Postgres)
-                          ├─ Celery workers (Valkey) for JD/resume/question processing
-                          ├─ AI Gateway → Ollama (Qwen3.5) — the only module that knows the provider
-                          ├─ Qdrant for skill/question/knowledge embeddings (BGE-M3 + reranker)
-                          └─ Judge0 for real code execution
+React/Vite ─▶ FastAPI (route → service → Postgres)
+               ├─ Celery + Valkey (JD/resume/knowledge/assessment/matching jobs, idempotent)
+               ├─ AI Gateway task router ─▶ Groq gpt-oss-120b (agents) · OpenAI gpt-6-luna (simple tasks)
+               │                           · Ollama qwen3.5:4b (offline fallback) — with a daily cost governor
+               ├─ Local models: BGE-M3 + BGE reranker (fp16) → Qdrant (tenant-filtered), faster-whisper
+               └─ Judge0 (opt-in; labelled local fallback on macOS)
 ```
-
-## Prerequisites
-
-- Python 3.12, Node 20+, Docker
-- [Ollama](https://ollama.com) installed natively for GPU-accelerated inference
+Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/AI_ROUTING_AND_COST.md`](docs/AI_ROUTING_AND_COST.md).
 
 ## Quickstart
 
-Full step-by-step instructions, including known local gotchas, are in
-[`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md). Short version:
+Full instructions and run modes (recommended / free-first / offline): [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
 
 ```bash
-# 1. Infra
-docker compose up -d postgres valkey qdrant judge0-db judge0-redis judge0-server judge0-workers
-
-# 2. Ollama (native, for GPU acceleration)
-OLLAMA_HOST=127.0.0.1:11435 ollama serve &
-OLLAMA_HOST=127.0.0.1:11435 ollama pull qwen3.5:4b
-
-# 3. Backend
-cd backend
-python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp ../.env.example .env
+docker compose up -d postgres valkey qdrant
+cd backend && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp ../.env.example .env        # set JWT_SECRET; GROQ_API_KEY / OPENAI_API_KEY are optional
 .venv/bin/alembic upgrade head
-.venv/bin/python -m app.services.skills.seed
-.venv/bin/uvicorn app.main:app --port 8020 --reload
-
-# 4. Celery worker (separate terminal)
-cd backend && .venv/bin/celery -A app.workers.celery_app worker --loglevel=info --pool=solo
-
-# 5. Frontend (separate terminal)
-cd frontend && npm install && npm run dev
+.venv/bin/python -m app.services.skills.seed && .venv/bin/python -m app.services.career.seed_resources
+.venv/bin/python -m app.cli create-admin you@example.com "Your Name"
+.venv/bin/uvicorn app.main:app --port 8020                  # terminal 1
+.venv/bin/celery -A app.workers.celery_app worker --pool=solo \
+  -Q documents,assessments,matching,knowledge,reports,celery   # terminal 2
+cd ../frontend && npm install && npm run dev                  # terminal 3 → http://localhost:5173
 ```
-
-Open http://localhost:5173, sign up as a **Recruiter**, create a company and a job, paste a JD,
-and watch it get analyzed.
 
 ## Tests
 
 ```bash
-cd backend && .venv/bin/pytest
+cd backend
+.venv/bin/pytest -q                          # 103 deterministic tests
+.venv/bin/pytest -q -m live                  # 4 live-model tests (fractions of a cent)
+.venv/bin/python scripts/e2e_full_scenario.py   # fresh E2E + provider/cost report
 ```
 
 ## Docs
@@ -81,4 +65,9 @@ cd backend && .venv/bin/pytest
 - [`docs/AGENTS.md`](docs/AGENTS.md) — the four PydanticAI agents
 - [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) — detailed setup + troubleshooting
 - [`docs/PRODUCTION_SCALING.md`](docs/PRODUCTION_SCALING.md) — what changes to go from Ollama/local to vLLM/production
-- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) — live build checklist
+- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) — verified status + test totals
+- [`docs/GAP_CLOSURE.md`](docs/GAP_CLOSURE.md) — requirement-by-requirement audit
+- [`docs/AI_ROUTING_AND_COST.md`](docs/AI_ROUTING_AND_COST.md) — router, fallback, cost governor, pricing
+- [`docs/RAG.md`](docs/RAG.md), [`docs/RAG_SECURITY.md`](docs/RAG_SECURITY.md) — retrieval and tenant isolation
+- [`docs/QUESTION_GOVERNANCE.md`](docs/QUESTION_GOVERNANCE.md) — question lifecycle and import formats
+- [`docs/PRIVACY_AND_DATA.md`](docs/PRIVACY_AND_DATA.md) — stored data, deletion, remote inference

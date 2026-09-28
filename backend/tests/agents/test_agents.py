@@ -34,12 +34,14 @@ async def test_knowledge_agent_executes_every_tool_and_reconciles_output():
         src_holder["id"] = last["source_id"]
         return ("fetch_source", {"source_id": last["source_id"]})
 
-    model = scripted([
-        call("get_skill"), call("get_existing_sources"), call("register_source", index=0), remember,
-        lambda l: ("extract_text", {"source_id": src_holder["id"]}),
-        lambda l: ("chunk_text", {"source_id": src_holder["id"]}),
-        lambda l: ("embed_chunks", {"source_id": src_holder["id"]}),
-        lambda l: ("store_chunks", {"source_id": src_holder["id"]}),
+    def reg_then_store(last):
+        src_holder["id"] = last["source_id"]
+        return ("store_chunks", {"source_id": last["source_id"]})
+
+    model = scripted([  # 5 model requests, within the complex budget of 6
+        [call("get_skill"), call("get_existing_sources")],
+        call("register_source", index=0),
+        reg_then_store,
         lambda l: ("mark_ready", {"source_id": src_holder["id"]}),
         # the "model" reports nonsense counts; the agent must return the real ones
         final(skill_id=str(uuid.uuid4()), source_ids=[], sources_processed=99, chunks_created=12345, status="READY", errors=[]),
@@ -53,6 +55,7 @@ async def test_knowledge_agent_executes_every_tool_and_reconciles_output():
     assert run.status == "COMPLETED" and not run.used_fallback
     assert [c["tool"] for c in run.tool_calls] == ["get_skill", "get_existing_sources", "register_source", "fetch_source",
                                                   "extract_text", "chunk_text", "embed_chunks", "store_chunks", "mark_ready"]
+    assert all(c.get("via") == "store_chunks" for c in run.tool_calls[3:7])  # completed inside store_chunks
 
 
 @pytest.mark.asyncio
@@ -91,13 +94,12 @@ async def test_interview_agent_enforces_selection_boundary(monkeypatch):
     async with AsyncSessionLocal() as db:
         iv = await _interview(db)
         py, docker, aws = (await skill(db, "Python")).id, (await skill(db, "Docker")).id, (await skill(db, "AWS")).id
-        model = scripted([
-            call("rank_competencies"),
-            call("get_interview_history"),
+        model = scripted([  # 4 model requests, within the budget of 6
+            [call("rank_competencies"), call("get_interview_history")],
             # tries to drill the already-proven skill: must be refused
             call("save_interview_turn", skill_id=str(py), question_text="Explain Python generators in depth please.", reason="x"),
-            call("retrieve_skill_knowledge", skill_id=str(docker)),
-            call("save_interview_turn", skill_id=str(docker), question_text="How does Docker layer caching affect build times?", reason="no Docker evidence yet"),
+            [call("retrieve_skill_knowledge", skill_id=str(docker)),
+             call("save_interview_turn", skill_id=str(docker), question_text="How does Docker layer caching affect build times?", reason="no Docker evidence yet")],
             final(target_skill_id=str(docker), question_text="q", difficulty="hard", reason_for_question="r", should_continue=True),
         ])
         with IA.interview_agent.override(model=model):
@@ -132,11 +134,10 @@ async def test_assessment_agent_reuses_company_questions_then_generates(monkeypa
                                 organization_id=org.id, visibility=Visibility.COMPANY_PRIVATE, status=QuestionStatus.APPROVED,
                                 options=["a", "b", "c"], correct_option_index=0, expected_concepts=["x", "y"], rubric={"criteria": ["c"]}))
         await db.commit()
-        steps = [call("get_job_competencies"), call("build_assessment_blueprint")]
-        for i in (0, 1):
-            steps += [call("search_company_questions", skill_index=i), call("search_platform_questions", skill_index=i),
-                      call("retrieve_knowledge", skill_index=i), call("generate_missing_question", skill_index=i)]
-        steps += [call("create_assessment"), lambda last: ("__final__", last)]
+        per_skill = [call("search_company_questions", skill_indexes=[]), call("search_platform_questions", skill_indexes=[]),
+                     call("retrieve_knowledge", skill_indexes=[0, 1]), call("generate_missing_question", skill_indexes=[])]
+        steps = [[call("get_job_competencies"), call("build_assessment_blueprint")], per_skill,  # 4 requests total
+                 call("create_assessment"), lambda last: ("__final__", last)]
         with AA.assessment_agent.override(model=scripted(steps)):
             plan = await AA.run_assessment_agent(db, await db.get(type(job), job.id), "Assessment", None)
     by = {s.skill_name: s for s in plan.sections}
@@ -164,10 +165,9 @@ async def test_career_agent_drops_fabricated_resources_and_orders_prerequisites(
         k8s, docker, fastapi, rust = [(await skill(db, n)).id for n in ("Kubernetes", "Docker", "FastAPI", "Rust")]
         real = await db.scalar(select(LearningResource).where(LearningResource.skill_id == k8s))
         fake_id = uuid.uuid4()
-        model = scripted([
+        model = scripted([  # 4 model requests, within the budget of 6
             call("calculate_skill_gaps"),
-            call("get_skill_prerequisites", skill_id=str(k8s)),
-            call("search_learning_resources", skill_id=str(k8s)),
+            [call("get_skill_prerequisites", skill_id=str(k8s)), call("search_learning_resources", skill_ids=[str(k8s)])],
             call("save_learning_path", summary="Build container skills first.", steps=[
                 {"skill_id": str(k8s), "rationale": "orchestrate", "resource_ids": [str(real.id), str(fake_id)]},
                 {"skill_id": str(rust), "rationale": "not a gap", "resource_ids": []},
@@ -216,3 +216,25 @@ async def test_live_career_agent_returns_real_resources():
         stored_ids = {r.id for r in (await db.scalars(select(LearningResource))).all()}
     assert rm.steps and all(r.resource_id in stored_ids for s in rm.steps for r in s.resources)
     assert any(s.resources for s in rm.steps)
+
+
+@pytest.mark.asyncio
+async def test_agent_request_limit_stops_runaway_loop_and_falls_back(monkeypatch):
+    """A model that keeps calling tools forever is cut off at the budget and the
+    deterministic fallback finishes; usage from the aborted run is still logged."""
+    async with AsyncSessionLocal() as db:
+        iv = await _interview(db)
+        loop = scripted([call("rank_competencies")])  # never finishes
+        with IA.interview_agent.override(model=loop):
+            monkeypatch.setattr(IA, "get_ai_gateway", lambda: _StubGW())
+            turn = await IA.decide_next_turn(db, iv)
+        await db.commit()
+    run = await last_run("interview_agent")
+    assert run.used_fallback and "did not save a turn" in run.error  # budget stopped it before any save
+    assert sum(1 for c in run.tool_calls if c["tool"] == "rank_competencies") == 6  # complex budget of 6 requests
+    assert turn is not None
+
+
+class _StubGW:
+    async def generate_structured(self, prompt, schema, **kw):
+        return schema(question_text="How do Docker volumes persist data?", reason_for_question="needs evidence")

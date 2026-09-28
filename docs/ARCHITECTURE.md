@@ -34,13 +34,22 @@ auth, validation, and shaping responses; business rules (blueprint allocation, s
 matching, application state transitions) live in `app/services/*` as plain functions that take an
 `AsyncSession` and return typed results, so they're testable without spinning up FastAPI.
 
+## AI Gateway and task router
+
+```
+task_type ─▶ router (providers.route) ─▶ [groq gpt-oss-120b | openai gpt-6-luna | (gpt-6-sol, escalation only) | ollama qwen3.5:4b]
+                 ▲ budget governor (tracked OpenAI spend from ai_runs)
+```
+See `docs/AI_ROUTING_AND_COST.md`. Local models (BGE-M3, BGE reranker, faster-whisper) stay in-process,
+lazy and fp16 on Apple Silicon. No large generative model needs to be resident in normal mode.
+
 ## Why an AI Gateway
 
-`app/services/ai_gateway/gateway.py` is the only module that knows the backing provider is Ollama.
-It exposes `generate`, `generate_structured`, `extract_structured`, `evaluate_rubric`, plus
-embedding/rerank helpers in the same package. Every other service and agent calls through it. To
+`app/services/ai_gateway/` is the only package that knows which providers exist (Groq, OpenAI, Ollama).
+It exposes `generate`, `generate_structured`, `extract_structured`, `evaluate_rubric`, `embed`,
+`rerank`, `transcribe`; the agents get their PydanticAI models from the same router. Every other service and agent calls through it. To
 move to production, only this package changes (see `docs/PRODUCTION_SCALING.md`) — no business
-logic depends on Ollama's HTTP shape.
+logic depends on any provider's HTTP shape.
 
 ## Multi-tenancy
 

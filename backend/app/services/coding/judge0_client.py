@@ -43,6 +43,18 @@ class Judge0Client:
 
     async def run(self, source_code: str, language: str, stdin: str = "", expected_output: str | None = None) -> dict:
         language_id = LANGUAGE_IDS.get(language, LANGUAGE_IDS["python"])
+        try:
+            result = await self._judge0(source_code, language_id, stdin, expected_output)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            if language != "python":
+                raise
+            return await _run_local_python_fallback(source_code, stdin, expected_output, f"Judge0 unreachable ({type(exc).__name__})")
+        if language == "python" and result.get("status", {}).get("description") in JUDGE0_SANDBOX_ERROR_MARKERS:
+            return await _run_local_python_fallback(source_code, stdin, expected_output, "Judge0 sandbox error (cgroup v2 host)")
+        result["execution_backend"] = "judge0"
+        return result
+
+    async def _judge0(self, source_code, language_id, stdin, expected_output) -> dict:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{self.base_url}/submissions",
@@ -55,11 +67,7 @@ class Judge0Client:
                 },
             )
             resp.raise_for_status()
-            result = resp.json()
-
-        if language == "python" and result.get("status", {}).get("description") in JUDGE0_SANDBOX_ERROR_MARKERS:
-            return await _run_local_python_fallback(source_code, stdin, expected_output)
-        return result
+            return resp.json()
 
     async def run_many(self, source_code: str, language: str, test_cases: list[dict]) -> list[dict]:
         results = []
@@ -74,7 +82,7 @@ class Judge0Client:
         return results
 
 
-async def _run_local_python_fallback(source_code: str, stdin: str, expected_output: str | None) -> dict:
+async def _run_local_python_fallback(source_code: str, stdin: str, expected_output: str | None, why: str) -> dict:
     def _execute() -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             script_path = Path(tmp) / "script.py"
@@ -103,6 +111,8 @@ async def _run_local_python_fallback(source_code: str, stdin: str, expected_outp
             "memory": None,
             "token": "local-fallback",
             "status": {"id": 3 if accepted else 4, "description": f"{status_description} (local fallback — see docs/LOCAL_SETUP.md)"},
+            "execution_backend": "local_fallback",
+            "fallback_reason": why,
         }
 
     return await asyncio.to_thread(_execute)

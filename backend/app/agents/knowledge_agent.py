@@ -15,10 +15,10 @@ import uuid
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.runtime import ToolLog, build_agent, run_agent
+from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent
 from app.models.knowledge import KnowledgeSource, KnowledgeSourceStatus as KS
 from app.services.knowledge import service as ks
 
@@ -61,15 +61,15 @@ class KnowledgeDeps:
 
 
 INSTRUCTIONS = """You ingest approved technical documentation into a knowledge base.
-Steps, in order: call get_skill; call get_existing_sources; then for EACH
-source index listed by get_existing_sources under 'to_register', call
-register_source(index); then for each returned source_id call fetch_source,
-extract_text, chunk_text, embed_chunks, store_chunks, mark_ready in that order.
-If extract_text reports unchanged content, skip straight to mark_ready.
-Pass only the ids the tools give you. When every source is READY or FAILED,
-return the final KnowledgePackage."""
+You have a small request budget, so put independent tool calls in the SAME response.
+1. In one response call get_skill and get_existing_sources.
+2. In one response call register_source for EVERY index under 'to_register'.
+3. For each returned source_id call store_chunks (it fetches, extracts, chunks and embeds
+   as needed), then mark_ready. You may use the finer tools (fetch_source, extract_text,
+   chunk_text, embed_chunks) when you need to inspect a step.
+Pass only ids the tools give you. Then reply with a one-line confirmation."""
 
-knowledge_agent = build_agent(KnowledgePackage, KnowledgeDeps, INSTRUCTIONS)
+knowledge_agent = build_agent(KnowledgePackage, KnowledgeDeps, INSTRUCTIONS, "knowledge_agent")
 
 
 @knowledge_agent.tool
@@ -113,7 +113,9 @@ async def register_source(ctx: RunContext[KnowledgeDeps], index: int) -> dict:
 
 def _src(d: KnowledgeDeps, source_id: str) -> KnowledgeSource:
     if source_id not in d.registered:
-        raise ValueError(f"unknown source_id {source_id}; call register_source first")
+        # Tell the model what it got wrong instead of aborting the run.
+        raise ModelRetry(f"source_id {source_id} was not registered in this run; use an id returned by register_source: "
+                         f"{list(d.registered)}")
     return d.registered[source_id]
 
 
@@ -138,6 +140,9 @@ async def fetch_source(ctx: RunContext[KnowledgeDeps], source_id: str) -> dict:
 async def extract_text(ctx: RunContext[KnowledgeDeps], source_id: str) -> dict:
     """Convert fetched bytes to clean text and report whether content changed."""
     d = ctx.deps
+    _src(d, source_id)
+    if source_id not in d.raw:
+        raise ModelRetry("call fetch_source for this source_id first (or just call store_chunks)")
     raw, mime = d.raw[source_id]
     d.text[source_id] = ks.extract_text(raw, mime)
     src = _src(d, source_id)
@@ -170,7 +175,25 @@ async def embed_chunks(ctx: RunContext[KnowledgeDeps], source_id: str) -> dict:
 async def store_chunks(ctx: RunContext[KnowledgeDeps], source_id: str) -> dict:
     """Persist chunks to Postgres and Qdrant (replacing older chunks of this source)."""
     d = ctx.deps
-    d.stored[source_id] = await ks.store_chunks(d.db, _src(d, source_id), d.chunks[source_id], d.vectors[source_id])
+    src = _src(d, source_id)
+    # Complete any earlier pipeline step the agent didn't call itself.
+    if source_id not in d.raw:
+        d.raw[source_id] = await ks.fetch_source(src)
+        d.log.record("fetch_source", source_id=source_id, via="store_chunks")
+    if source_id not in d.text:
+        d.text[source_id] = ks.extract_text(*d.raw[source_id])
+        if src.content_hash == ks.content_hash(d.text[source_id]) and src.chunk_count > 0:
+            d.skipped.add(source_id)
+            d.log.record("extract_text", source_id=source_id, unchanged=True, via="store_chunks")
+            return {"stored": 0, "unchanged": True}
+        d.log.record("extract_text", source_id=source_id, via="store_chunks")
+    if source_id not in d.chunks:
+        d.chunks[source_id] = ks.chunk_text(d.text[source_id])
+        d.log.record("chunk_text", source_id=source_id, chunks=len(d.chunks[source_id]), via="store_chunks")
+    if source_id not in d.vectors:
+        d.vectors[source_id] = ks.embed_chunks(d.chunks[source_id])
+        d.log.record("embed_chunks", source_id=source_id, via="store_chunks")
+    d.stored[source_id] = await ks.store_chunks(d.db, src, d.chunks[source_id], d.vectors[source_id])
     d.log.record("store_chunks", source_id=source_id, stored=d.stored[source_id])
     return {"stored": d.stored[source_id]}
 
@@ -223,7 +246,7 @@ async def run_knowledge_agent(
     )
 
     async def llm() -> KnowledgePackage:
-        await knowledge_agent.run(f"Ingest {len(sources)} approved source(s) for skill '{skill_name}'.", deps=deps)
+        await run_llm_agent(knowledge_agent, "knowledge_agent", f"Ingest {len(sources)} approved source(s) for skill '{skill_name}'.", deps, log)
         pkg = _reconcile(deps)
         if pkg.sources_processed < len(sources) and not deps.errors:
             raise RuntimeError("agent stopped before every source was READY")

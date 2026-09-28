@@ -20,7 +20,7 @@ from typing import Any, TypeVar
 
 from pydantic_ai import Agent
 
-from app.agents.model_factory import AGENT_MODEL_SETTINGS, get_agent_model
+from app.agents.model_factory import AGENT_MODEL_SETTINGS, agent_run_kwargs
 from app.core.database import AsyncSessionLocal
 from app.models.misc import AgentRun
 
@@ -34,6 +34,7 @@ def _now() -> str:
 @dataclass
 class ToolLog:
     calls: list[dict[str, Any]] = field(default_factory=list)
+    llm: dict[str, Any] = field(default_factory=dict)  # served model + usage of the agent's own LLM calls
 
     def record(self, tool: str, **args: Any) -> None:
         self.calls.append({"tool": tool, "at": _now(), **{k: _jsonable(v) for k, v in args.items()}})
@@ -49,15 +50,60 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
-def build_agent(output_type: type, deps_type: type, instructions: str) -> Agent:
+def build_agent(output_type: type, deps_type: type, instructions: str, agent_type: str) -> Agent:
+    # No default model: `run_llm_agent` always supplies the routed one, and a
+    # run without a model fails loudly instead of using a stand-in.
     return Agent(
-        get_agent_model(),
+        None,
+        name=agent_type,
         deps_type=deps_type,
-        output_type=output_type,
+        # Typed output OR a short text reply. Allowing text keeps tool_choice
+        # "auto": with a required output tool, gpt-oss-120b sometimes writes the
+        # final JSON as text and Groq rejects the turn (400 tool_use_failed)
+        # after all tool work is done. The public agent functions rebuild the
+        # typed result from tool-persisted state either way.
+        output_type=[output_type, str],
         instructions=instructions,
-        retries=3,
+        retries=2,
         model_settings=AGENT_MODEL_SETTINGS,
+        defer_model_check=True,
     )
+
+
+async def run_llm_agent(agent: Agent, agent_type: str, prompt: str, deps, log: ToolLog):
+    """Runs a PydanticAI agent on the routed model with a hard request limit,
+    capturing the served model and token usage for ai_runs/cost tracking."""
+    from pydantic_ai.usage import RunUsage
+
+    kwargs, chain, notes = await agent_run_kwargs(agent_type)
+    usage = RunUsage()  # caller-owned: token usage survives even if the run raises
+    log.llm = {"route": [p.name for p in chain], "notes": notes, "chain": chain}
+
+    def capture(served=None):
+        log.llm.update({"served_model": served, "input_tokens": usage.input_tokens or 0,
+                        "cached_input_tokens": usage.cache_read_tokens or 0,
+                        "output_tokens": usage.output_tokens or 0, "requests": usage.requests})
+
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    try:
+        # Tools share one AsyncSession, which isn't safe for concurrent use:
+        # batched tool calls in a single model response run one at a time.
+        with Agent.parallel_tool_call_execution_mode("sequential"):
+            result = await agent.run(prompt, deps=deps, usage=usage, **kwargs)
+    except UsageLimitExceeded:
+        # The request budget stopped the conversation. Whether the *work* is
+        # done is decided by the caller's checks on tool-persisted state
+        # (e.g. every source READY, turn saved, assessment created); if it
+        # isn't, those checks raise and the deterministic fallback runs.
+        capture()
+        log.llm["notes"] = list(log.llm.get("notes") or []) + ["stopped_at_request_budget"]
+        return None
+    except Exception:
+        capture()
+        raise
+    capture(next((m.model_name for m in reversed(result.all_messages()) if getattr(m, "model_name", None)), None))
+    return result
 
 
 async def _write_run(**fields: Any) -> uuid.UUID:
@@ -100,12 +146,12 @@ async def run_agent(
         if missing:
             raise RuntimeError(f"agent finished without calling required tools: {sorted(missing)}")
         await _update_run(run_id, status="COMPLETED", tool_calls=tool_log.calls, ended_at=_now())
-        await _log_llm(agent_type, context_type, context_id, llm_started, t0, None)
+        await _log_llm(agent_type, context_type, context_id, llm_started, t0, None, tool_log, tool_ok=True)
         return output
     except Exception as exc:  # noqa: BLE001
         llm_error = f"{type(exc).__name__}: {exc}"
         if "disabled" not in llm_error:
-            await _log_llm(agent_type, context_type, context_id, llm_started, t0, llm_error)
+            await _log_llm(agent_type, context_type, context_id, llm_started, t0, llm_error, tool_log, tool_ok=False)
         if fallback is None:
             await _update_run(run_id, status="FAILED", tool_calls=tool_log.calls, error=llm_error, ended_at=_now())
             raise
@@ -125,13 +171,40 @@ async def run_agent(
         raise
 
 
-async def _log_llm(agent_type, context_type, context_id, started_at, t0, error) -> None:
-    from app.core.config import get_settings
+async def _log_llm(agent_type, context_type, context_id, started_at, t0, error, tool_log: ToolLog, tool_ok=None) -> None:
     from app.services.ai_gateway.gateway import _record_run
+    from app.services.ai_gateway.pricing import estimate_cost_usd
 
+    meta = tool_log.llm
+    chain = meta.get("chain") or []
+    served = meta.get("served_model")
+    pv = next((p for p in chain if p.model == served), None)
+    if pv is None and served is None and chain:
+        pv = chain[0]  # run errored before a response named its model: attribute to the route head
+    if pv is None and not chain:
+        return
+    i, c, o = meta.get("input_tokens", 0), meta.get("cached_input_tokens", 0), meta.get("output_tokens", 0)
     await _record_run(
-        task_type=f"agent:{agent_type}", provider="ollama-openai-compat", model=get_settings().LLM_MODEL,
+        # If the served model isn't one of the routed providers (e.g. a scripted test model), say so.
+        task_type=f"agent:{agent_type}", provider=pv.vendor if pv else "unrouted",
+        model=served or (chain[0].model if error else "unknown"), tool_call_success=tool_ok,
         prompt_version=f"{agent_type}_v1", status="FAILED" if error else "COMPLETED",
         latency_ms=(time.monotonic() - t0) * 1000, schema_valid=error is None, error=error,
+        retry_count=max(0, (meta.get("requests") or 1) - 1),
+        fallback_used=bool(pv and served and served != chain[0].model),
+        fallback_reason="; ".join(meta.get("notes") or []) or None,
+        input_tokens=i, cached_input_tokens=c, output_tokens=o,
+        estimated_cost_usd=estimate_cost_usd(served, i, c, o) if (pv and pv.paid) else 0.0,
         related_entity_type=context_type, related_entity_id=context_id, started_at=started_at, ended_at=_now(),
     )
+
+
+def tool_uuid(value: str, what: str = "id") -> uuid.UUID:
+    """Parse an id the model passed to a tool; a malformed id becomes a
+    correction for the model (ModelRetry), not a crashed run."""
+    from pydantic_ai import ModelRetry
+
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise ModelRetry(f"'{value}' is not a valid {what}; use the exact id returned by a previous tool") from None

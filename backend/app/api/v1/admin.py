@@ -304,3 +304,76 @@ async def list_audit_logs(action: str | None = None, entity_type: str | None = N
 async def audit_actions(user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(AuditEvent.action, func.count()).group_by(AuditEvent.action).order_by(AuditEvent.action))).all()
     return [{"action": a, "count": c} for a, c in rows]
+
+
+# ---- AI providers & cost ------------------------------------------------------
+
+@router.get("/ai/providers")
+async def ai_providers(user: User = Depends(ADMIN)):
+    """Provider health without secrets. Cloud checks hit the free /models
+    endpoint only (no tokens spent)."""
+    import httpx
+
+    from app.core.config import get_settings
+    from app.services.ai_gateway.budget import budget_state
+    from app.services.ai_gateway.providers import TASK_POLICY, configured_providers, in_cooldown, route
+
+    s = get_settings()
+    avail = configured_providers()
+
+    async def check(url, headers=None):
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                return (await c.get(url, headers=headers or {})).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    ollama_loaded = False
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            ps = (await c.get(f"{s.OLLAMA_BASE_URL}/api/ps")).json()
+            ollama_loaded = any(m.get("name", "").startswith(s.OLLAMA_MODEL) for m in ps.get("models", []))
+    except (httpx.HTTPError, ValueError):
+        pass
+    b = await budget_state()
+    return {
+        "groq": {"configured": "groq" in avail, "model": s.GROQ_MODEL, "rate_limited": in_cooldown("groq"),
+                 "healthy": await check(f"{s.GROQ_BASE_URL}/models", {"Authorization": f"Bearer {s.GROQ_API_KEY}"}) if "groq" in avail else False},
+        "openai": {"configured": "luna" in avail, "cheap_model": s.OPENAI_CHEAP_MODEL, "escalation_model": s.OPENAI_ESCALATION_MODEL,
+                   "healthy": await check(f"{s.OPENAI_BASE_URL}/models/{s.OPENAI_CHEAP_MODEL}", {"Authorization": f"Bearer {s.OPENAI_API_KEY}"}) if "luna" in avail else False},
+        "ollama": {"configured": True, "model": s.OLLAMA_MODEL, "healthy": await check(f"{s.OLLAMA_BASE_URL}/api/version"),
+                   "model_loaded_in_memory": ollama_loaded},
+        "routing_mode": "local_only" if s.LOCAL_ONLY else "router",
+        "routes": {t: (await route(t, budget=b)).names for t in TASK_POLICY},
+        "budget": b.as_dict(),
+    }
+
+
+@router.get("/ai/usage")
+async def ai_usage(days: int = 10, user: User = Depends(ADMIN), db: AsyncSession = Depends(get_db)):
+    """All figures aggregated from ai_runs."""
+    import datetime as dt
+
+    from app.services.ai_gateway.budget import get_openai_spend_today
+
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    rows = (await db.execute(
+        select(AIRun.provider, AIRun.model, func.count(), func.count().filter(AIRun.status == "FAILED"),
+               func.count().filter(AIRun.fallback_used.is_(True)), func.avg(AIRun.latency_ms),
+               func.coalesce(func.sum(AIRun.input_tokens), 0), func.coalesce(func.sum(AIRun.output_tokens), 0),
+               func.coalesce(func.sum(AIRun.estimated_cost_usd), 0.0))
+        .where(AIRun.created_at >= since).group_by(AIRun.provider, AIRun.model).order_by(func.count().desc())
+    )).all()
+    by_task = (await db.execute(
+        select(AIRun.task_type, AIRun.provider, func.count()).where(AIRun.created_at >= since)
+        .group_by(AIRun.task_type, AIRun.provider).order_by(AIRun.task_type)
+    )).all()
+    return {
+        "openai_spend_today_usd": round(await get_openai_spend_today(), 6),
+        f"openai_spend_{days}d_usd": round(sum(float(r[8]) for r in rows if r[0] == "openai"), 6),
+        "label": "tracked estimate from ai_runs (not the OpenAI account balance)",
+        "by_model": [{"provider": r[0], "model": r[1], "requests": r[2], "failures": r[3], "fallbacks": r[4],
+                      "avg_latency_ms": round(float(r[5])) if r[5] else None, "input_tokens": int(r[6]),
+                      "output_tokens": int(r[7]), "estimated_cost_usd": round(float(r[8]), 6)} for r in rows],
+        "by_task": [{"task_type": t, "provider": p, "requests": n} for t, p, n in by_task],
+    }

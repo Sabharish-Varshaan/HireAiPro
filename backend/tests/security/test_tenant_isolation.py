@@ -138,13 +138,13 @@ async def test_live_rag_output_does_not_leak(client, tenants, monkeypatch):
     from app.services.knowledge.service import retrieve
 
     sent: list[str] = []
-    real_raw = gw.AIGateway._raw_generate
+    real_call = gw.AIGateway._call
 
-    async def spy(self, prompt, system, temperature, json_schema=None):
+    async def spy(self, pv, prompt, system, temperature, json_schema=None):
         sent.append((system or "") + "\n" + prompt)
-        return await real_raw(self, prompt, system, temperature, json_schema)
+        return await real_call(self, pv, prompt, system, temperature, json_schema)
 
-    monkeypatch.setattr(gw.AIGateway, "_raw_generate", spy)
+    monkeypatch.setattr(gw.AIGateway, "_call", spy)
     question = "What must every FastAPI dependency in the payments service be wrapped in?"
     b_scope, a_scope = TenantScope(organization_id=tenants["org_b"].id), TenantScope(organization_id=tenants["org_a"].id)
 

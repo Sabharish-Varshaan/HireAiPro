@@ -18,6 +18,17 @@ settings = get_settings()
 EMBEDDING_DIM = 1024  # BAAI/bge-m3 dense dimension
 
 
+def _model_kwargs() -> dict:
+    """fp16 on Apple MPS / CUDA halves unified-memory use (measured on M4:
+    BGE-M3 + reranker 5.34 GB fp32 -> 2.32 GB fp16) with effectively identical
+    output (embedding cosine >= 0.9998, identical rerank order). CPU stays fp32."""
+    import torch
+
+    if settings.EMBEDDING_FP16 and (torch.backends.mps.is_available() or torch.cuda.is_available()):
+        return {"torch_dtype": torch.float16}
+    return {}
+
+
 @dataclass
 class RetrievedDocument:
     id: str
@@ -39,7 +50,7 @@ class EmbeddingService:
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(self.model_name)
+                    self._model = SentenceTransformer(self.model_name, model_kwargs=_model_kwargs())
         return self._model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -61,7 +72,7 @@ class RerankerService:
                 if self._model is None:
                     from sentence_transformers import CrossEncoder
 
-                    self._model = CrossEncoder(self.model_name)
+                    self._model = CrossEncoder(self.model_name, model_kwargs=_model_kwargs())
         return self._model
 
     def rerank(self, query: str, candidates: list[RetrievedDocument], top_n: int) -> list[RetrievedDocument]:
