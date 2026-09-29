@@ -13,6 +13,11 @@ shows nothing.
 - skill **bands** (strong / developing / emerging / not yet demonstrated), with evidence counts
 - strengths / skills to develop / missing skills, and a roadmap with priority order
 
+## Deliberate exception: round results
+Where a company has configured a pass requirement for a round (`docs/ROUND_QUALIFICATION.md`), the student sees **that round's** score out of 100, the requirement and a plain
+result ("Qualified for the next round" / "Round completed" / "Under review by the hiring team") through `GET /hiring-pipeline/applications/{id}`. Component breakdowns, reasons,
+rubrics and the automatic-versus-override history stay company-only, and rounds without a requirement show no score. Answer-level scores are still never sent to students.
+
 ## Student never sees
 Assessment and answer scores, `is_correct`, rubric values, interview difficulty and the reasoning for a question
 (which embedded confidence), match/fit percentages, rank, evidence confidence and raw or normalized scores, skill

@@ -1,5 +1,7 @@
 # Local Setup (Apple Silicon, 16 GB)
 
+> The step-by-step start-from-zero guide is the repository [README](../README.md). This page keeps the run modes and troubleshooting notes.
+
 ## Prerequisites
 Python 3.12 (not 3.14 — ML deps), Node 20+, Docker Desktop, Ollama (native install, optional).
 

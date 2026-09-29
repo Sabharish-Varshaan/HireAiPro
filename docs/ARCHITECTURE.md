@@ -3,7 +3,7 @@
 ```
                          ┌───────────────────────────┐
                          │   React/Vite frontend      │
-                         │ (student/company/inst/admin)│
+                         │ (student/company/officer)   │
                          └──────────────┬────────────┘
                                         │ REST (TanStack Query)
                          ┌──────────────▼────────────┐
@@ -26,6 +26,13 @@
          │of truth)│ execution)│      └───────────┘└────────┘
          └────────┘ └────────┘
 ```
+
+## Hiring pipeline, qualification and agent orchestration (since the pipeline work)
+Each job owns an ordered set of stages (`hiring_stages`; aptitude, technical, coding, technical interview, HR interview) and each application one progress row per enabled stage
+(`application_stage_progress`); every assessment stage has its own frozen version, timer and attempt. Progression and unlocking are deterministic (`services/pipeline`). After a round
+finishes, `services/pipeline/qualification.py` freezes the component scores, computes a 0–100 round score and compares it with the company's threshold (`>=` qualifies); the result, threshold and
+weights are stored in `round_results`, and a human override is recorded beside it, never over it. `app/agents/orchestrator.py` resolves each request to the minimal set of components
+(deterministic ones first) and writes a compact trace to `agent_runs`; model choice and fallback stay with the AI gateway router. See `docs/HIRING_PIPELINE.md`, `docs/ROUND_QUALIFICATION.md`, `docs/SYSTEM_AUDIT.md`.
 
 ## Layering
 
