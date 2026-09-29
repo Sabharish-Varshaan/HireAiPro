@@ -158,6 +158,25 @@ function AssessmentPanel({ job, processing }: { job: any; processing: any }) {
           ))}
         </div>
       )}
+      {plan?.coverage && (
+        <div className="text-sm border border-gray-200 rounded-md p-3 space-y-1" data-testid="coverage">
+          <p><b>{plan.coverage.covered_slots}/{plan.coverage.required_slots} question slots covered</b> ({plan.coverage.coverage_percentage}%) ·
+            {" "}{plan.coverage.generation_attempts} generation attempts (max {plan.coverage.attempts_per_slot} per slot)
+            {plan.dropped_duplicates?.length ? ` · ${plan.dropped_duplicates.length} duplicate(s) dropped` : ""}</p>
+          {plan.coverage.uncovered_slots.length > 0 && (
+            <div className="text-amber-800">
+              <p>{plan.coverage.uncovered_slots.reduce((n: number, u: any) => n + u.missing, 0)} slot(s) could not be safely generated.
+                Add a question for these in the <a className="underline" href="/company/questions">question bank</a>, then regenerate:</p>
+              <ul className="list-disc ml-5">
+                {plan.coverage.uncovered_slots.map((u: any) => (
+                  <li key={u.skill + u.question_type}>{u.skill} · {u.question_type} × {u.missing}
+                    {u.rejection_reasons.length > 0 && <span className="text-xs text-gray-600"> — rejected: {u.rejection_reasons.join(" | ").slice(0, 240)}</span>}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       {questions.length > 0 && (
         <Table head={["Skill", "Type", "Origin", "Status", "Question", "Provenance"]}>
           {questions.map((q: any) => (

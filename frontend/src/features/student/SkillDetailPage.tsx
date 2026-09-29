@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Badge, Card, ErrorBox, Loading, Table, pct } from "../../components/ui";
+import { Badge, Card, ErrorBox, Loading, Table } from "../../components/ui";
+
+const BAND_LABEL: Record<string, string> = { strong: "Strong", developing: "Developing", emerging: "Emerging", not_yet_demonstrated: "Not yet demonstrated" };
+const BAND_TONE: Record<string, string> = { strong: "green", developing: "blue", emerging: "amber", not_yet_demonstrated: "gray" };
 
 export default function SkillDetailPage() {
   const { skillId } = useParams();
@@ -15,18 +18,15 @@ export default function SkillDetailPage() {
     <div className="max-w-4xl space-y-5">
       <Link to="/student" className="text-xs text-gray-500 underline">← Dashboard</Link>
       <h1 className="text-lg font-semibold">{x.skill.canonical_name} <span className="text-sm text-gray-500">{x.skill.category}</span></h1>
-      <Card title="Estimate (skill_scoring_v1)">
-        {x.estimate ? (
-          <p className="text-sm">Level <b>{pct(x.estimate.estimated_level)}</b> · confidence <b>{pct(x.estimate.confidence)}</b> · {x.estimate.evidence_count} scored evidence · {x.estimate.scoring_version}</p>
-        ) : <p className="text-sm text-gray-500">No verified level yet — only scored evidence (assessments, coding, interviews, projects) counts.</p>}
-        <p className="text-xs text-gray-500">Source weights: {Object.entries(x.weights).map(([k, v]) => `${k} ${pct(v as number)}`).join(" · ")}</p>
+      <Card title="Your level">
+        <p className="text-sm"><Badge tone={BAND_TONE[x.band] ?? "gray"}>{BAND_LABEL[x.band] ?? x.band}</Badge></p>
+        <p className="text-xs text-gray-500">Based only on verified evidence (assessments, coding, interviews). Resume claims help decide what to assess but do not count.</p>
       </Card>
-      <Card title="Evidence">
-        <Table head={["Source", "Score", "Confidence", "Difficulty", "Counts toward level", "When"]}>
+      <Card title="What this is based on">
+        <Table head={["Source", "Counts toward level", "When"]}>
           {x.evidence.map((e: any) => (
-            <tr key={e.id}><td className="py-1 pr-3"><Badge tone={e.counts_toward_score ? "blue" : "gray"}>{e.source_type}</Badge></td>
-              <td className="pr-3">{pct(e.normalized_score)}</td><td className="pr-3">{pct(e.confidence)}</td><td className="pr-3">{e.difficulty ?? "—"}</td>
-              <td className="pr-3">{e.counts_toward_score ? "yes" : "no (claim)"}</td><td className="text-xs text-gray-500">{new Date(e.created_at).toLocaleString()}</td></tr>
+            <tr key={e.id}><td className="py-1 pr-3"><Badge tone={e.counts_toward_skill ? "blue" : "gray"}>{e.source_type}</Badge></td>
+              <td className="pr-3">{e.counts_toward_skill ? "yes" : "no (claim)"}</td><td className="text-xs text-gray-500">{new Date(e.created_at).toLocaleString()}</td></tr>
           ))}
         </Table>
       </Card>

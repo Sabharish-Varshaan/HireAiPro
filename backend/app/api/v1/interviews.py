@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.interview_agent import decide_next_turn, evaluate_turn_answer
 from app.api.deps import get_current_user, require_roles
-from app.api.tenancy import assert_can_view_student, get_student_profile
+from app.api.tenancy import assert_can_view_application, assert_can_view_student, get_student_profile
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.applications import Application
@@ -19,6 +19,7 @@ from app.models.interviews import Interview, InterviewTurn
 from app.models.jobs import Job
 from app.models.skills import Skill
 from app.models.users import User
+from app.schemas.student_views import StudentInterviewTurnView, is_student
 from app.schemas.interviews_api import InterviewOut, InterviewTurnOut, StartInterviewRequest
 from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
 from app.services.applications.service import transition_application
@@ -51,6 +52,14 @@ async def _own_turn(db, user, turn_id) -> tuple[InterviewTurn, Interview]:
     if turn is None:
         raise HTTPException(404, "Turn not found")
     return turn, await _own_interview(db, user, turn.interview_id)
+
+
+async def _student_turn(db, t: InterviewTurn) -> StudentInterviewTurnView:
+    """No rubric values, difficulty or selection reason (which embeds confidence numbers)."""
+    skill = await db.get(Skill, t.target_skill_id)
+    return StudentInterviewTurnView(id=t.id, turn_index=t.turn_index, skill_name=skill.canonical_name if skill else None,
+                                    question_text=t.question_text, student_answer_text=t.student_answer_text,
+                                    answer_source=t.answer_source, answered=t.rubric_evaluation is not None)
 
 
 async def _turn_out(db, t: InterviewTurn) -> InterviewTurnOut:
@@ -92,7 +101,7 @@ async def _complete(db, interview: Interview, actor_id) -> None:
     await compute_match_for_application(db, application.id)
 
 
-@router.post("/{interview_id}/next-turn", response_model=InterviewTurnOut | None)
+@router.post("/{interview_id}/next-turn", response_model=StudentInterviewTurnView | None)
 async def next_turn(interview_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)),
                     db: AsyncSession = Depends(get_db)):
     interview = await _own_interview(db, user, interview_id)
@@ -101,7 +110,7 @@ async def next_turn(interview_id: uuid.UUID, user: User = Depends(require_roles(
     pending = await db.scalar(select(InterviewTurn).where(InterviewTurn.interview_id == interview.id,
                                                           InterviewTurn.student_answer_text.is_(None)))
     if pending:  # idempotent: don't generate a second question while one is unanswered
-        return await _turn_out(db, pending)
+        return await _student_turn(db, pending)
     try:
         turn = await decide_next_turn(db, interview)
     except AIGatewayError as exc:
@@ -110,7 +119,7 @@ async def next_turn(interview_id: uuid.UUID, user: User = Depends(require_roles(
         await _complete(db, interview, user.id)
         return None
     await db.commit()
-    return await _turn_out(db, turn)
+    return await _student_turn(db, turn)
 
 
 @router.post("/turns/{turn_id}/transcribe")
@@ -147,12 +156,12 @@ async def transcribe_answer(turn_id: uuid.UUID, audio: UploadFile, user: User = 
     return result
 
 
-@router.post("/turns/{turn_id}/answer", response_model=InterviewTurnOut)
+@router.post("/turns/{turn_id}/answer", response_model=StudentInterviewTurnView)
 async def answer_turn(turn_id: uuid.UUID, payload: AnswerTurnRequest, user: User = Depends(require_roles(UserRole.STUDENT)),
                       db: AsyncSession = Depends(get_db)):
     turn, interview = await _own_turn(db, user, turn_id)
     if turn.rubric_evaluation is not None:
-        return await _turn_out(db, turn)  # idempotent re-submit
+        return await _student_turn(db, turn)  # idempotent re-submit
     if not payload.answer_text.strip():
         raise HTTPException(422, "Answer is empty")
     turn.student_answer_text = payload.answer_text.strip()
@@ -169,7 +178,7 @@ async def answer_turn(turn_id: uuid.UUID, payload: AnswerTurnRequest, user: User
     await db.commit()
     await recalculate_all_skills_for_student(db, interview.student_id, user.id, "interview_turn")
     await db.refresh(turn)
-    return await _turn_out(db, turn)
+    return await _student_turn(db, turn)
 
 
 @router.post("/{interview_id}/finish")
@@ -184,14 +193,16 @@ async def finish_interview(interview_id: uuid.UUID, user: User = Depends(require
     return {"status": "COMPLETED"}
 
 
-@router.get("/{interview_id}/turns", response_model=list[InterviewTurnOut])
+@router.get("/{interview_id}/turns", response_model=None)
 async def list_turns(interview_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     interview = await db.get(Interview, interview_id)
     if interview is None:
         raise HTTPException(404, "Interview not found")
-    await assert_can_view_student(db, user, interview.student_id)
+    await assert_can_view_application(db, user, await db.get(Application, interview.application_id))
     turns = (await db.scalars(select(InterviewTurn).where(InterviewTurn.interview_id == interview_id)
                               .order_by(InterviewTurn.turn_index))).all()
+    if is_student(user):
+        return [await _student_turn(db, t) for t in turns]
     return [await _turn_out(db, t) for t in turns]
 
 
@@ -201,7 +212,7 @@ async def interview_for_application(application_id: uuid.UUID, user: User = Depe
     application = await db.get(Application, application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
-    await assert_can_view_student(db, user, application.student_id)
+    await assert_can_view_application(db, user, application)
     return await db.scalar(select(Interview).where(Interview.application_id == application_id))
 
 

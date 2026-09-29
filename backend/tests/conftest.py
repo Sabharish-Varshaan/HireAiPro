@@ -4,6 +4,9 @@ import os
 # Qdrant collection prefix so they never read or write dev data.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://hireai:hireai@localhost:5435/hireai_test")
 os.environ.setdefault("QDRANT_COLLECTION_PREFIX", "test_")
+# Celery broker + result backend in their own Valkey database: a dev worker
+# (db 0) can never consume a task enqueued by a test, and vice versa.
+os.environ["VALKEY_URL"] = os.environ.get("TEST_VALKEY_URL", "redis://localhost:6380/10")
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 import httpx
@@ -14,7 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal, engine
 
 
+def _assert_isolated_broker():
+    """Refuse to run tests against the development broker."""
+    from dotenv import dotenv_values
+    from app.workers.celery_app import celery_app
+
+    dev = (dotenv_values(os.path.join(os.path.dirname(__file__), "..", ".env")).get("VALKEY_URL") or "redis://localhost:6379/0")
+    test = celery_app.conf.broker_url
+    if test.rstrip("/") == dev.rstrip("/"):
+        raise pytest.UsageError(f"test Celery broker must differ from dev broker ({dev})")
+    import redis
+    redis.Redis.from_url(test).flushdb()  # test-only database: drop tasks left by earlier sessions
+
+
 def pytest_configure(config):
+    _assert_isolated_broker()
     config.addinivalue_line("markers", "live: needs the local Ollama model (slow); run with -m live")
     config.addinivalue_line("markers", "judge0: needs the running cgroup-v2 Judge0 stack; run with -m judge0")
 

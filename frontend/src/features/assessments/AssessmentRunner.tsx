@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { CodingQuestion } from "./CodingQuestion";
 import { api } from "../../api/client";
-import { Badge, Button, ErrorBox, Loading, pct } from "../../components/ui";
+import { Badge, Button, ErrorBox, Loading } from "../../components/ui";
 
 type Saved = { answer_id: string; answer_text?: string | null; selected_option_index?: number | null };
 
@@ -67,11 +67,12 @@ export function AssessmentRunner({ assessmentId, applicationId, onSubmitted }: {
   if (status === "SCORED") {
     return (
       <div className="space-y-2">
-        <p className="text-sm">Submitted. Score: <b>{pct(existing.data?.attempt?.total_score, 1)}</b></p>
+        <p className="text-sm font-medium">Assessment completed</p>
+        <p className="text-xs text-gray-500">Your answers were submitted for review. Results are shared with the employer; your development feedback is under "Your skills".</p>
         <ul className="text-xs text-gray-600 space-y-1">
           {(existing.data?.answers ?? []).map((a: any) => (
-            <li key={a.answer_id}><Badge tone="gray">{a.question_type}</Badge> {a.question_text?.slice(0, 90)} — {a.score == null ? "—" : a.score.toFixed(2)}
-              {a.coding && ` · ${a.coding.passed}/${a.coding.total} tests · ${a.coding.language ?? "?"} · ${a.coding.backends.join(", ")}`}</li>
+            <li key={a.answer_id}><Badge tone="gray">{a.question_type}</Badge> {a.question_text?.slice(0, 90)} — {a.completed ? "answered" : "not answered"}
+              {a.coding && ` · coding: ${a.coding.status === "ALL_TESTS_PASSED" ? "all tests passed" : a.coding.status === "SOME_TESTS_FAILED" ? "some tests failed" : "error"} (${a.coding.language})`}</li>
           ))}
         </ul>
       </div>

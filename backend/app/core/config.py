@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     OPENAI_CHEAP_MODEL: str = "gpt-6-luna"
     OPENAI_ESCALATION_MODEL: str = "gpt-6-sol"
 
-    OLLAMA_BASE_URL: str = "http://localhost:11435"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"  # host Ollama.app default port
     OLLAMA_MODEL: str = "qwen3.5:4b"
 
     # Cost governor. Spend is the application's own tracked estimate from
@@ -66,6 +66,8 @@ class Settings(BaseSettings):
 
     JUDGE0_URL: str = "http://localhost:2358"
     JUDGE0_POLL_TIMEOUT_SECONDS: int = 30
+    # Assessment generation: initial candidate + (N-1) replacements per uncovered slot.
+    ASSESSMENT_SLOT_GENERATION_ATTEMPTS: int = 3
     # Unsandboxed local execution of student code is OFF unless BOTH are set; any other
     # APP_ENV (demo, production) ignores the flag. Judge0 down -> EXECUTION_SERVICE_UNAVAILABLE.
     APP_ENV: str = "development"

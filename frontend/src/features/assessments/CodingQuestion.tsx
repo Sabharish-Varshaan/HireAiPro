@@ -6,6 +6,12 @@ import { Badge, Button, ErrorBox, inputCls } from "../../components/ui";
 
 type Lang = { id: string; display_name: string; monaco: string; judge0_language_id: number | null; available: boolean };
 
+const RESULT_LABEL: Record<string, string> = {
+  ALL_TESTS_PASSED: "All hidden tests passed",
+  SOME_TESTS_FAILED: "Some hidden tests failed",
+  COMPILE_OR_RUNTIME_ERROR: "Compile or runtime error",
+};
+
 // Minimal honest templates: they read the test input and print, nothing more.
 const TEMPLATES: Record<string, string> = {
   python: `import sys
@@ -94,12 +100,9 @@ export function CodingQuestion({ aqId, question, savedText, saveAndGetAnswerId }
       <ErrorBox error={run.error || langs.error} />
       {result && (
         <div className="text-xs space-y-1" data-testid="coding-result">
-          <p><b>{result.passed_count}/{result.total_count}</b> hidden tests passed · {result.language} · <Badge>{result.execution_backend}</Badge></p>
-          {result.tests.map((t: any) => (
-            <p key={t.index}>Test {t.index + 1}: {t.passed ? "passed" : "failed"} ({t.status})
-              {t.stderr && <span className="text-red-600"> {t.stderr.slice(0, 200)}</span>}</p>
-          ))}
-          {result.tests.some((t: any) => t.execution_backend === "local_fallback") && (
+          <p><b>{RESULT_LABEL[result.result] ?? result.result}</b> · {result.language} · <Badge>{result.execution_backend}</Badge></p>
+          {result.message && <pre className="text-red-600 whitespace-pre-wrap">{result.message.slice(0, 400)}</pre>}
+          {result.execution_backend?.includes("local_fallback") && (
             <p className="text-amber-700">Executed by the local development fallback, not the Judge0 sandbox. Development only.</p>
           )}
         </div>

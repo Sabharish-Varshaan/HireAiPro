@@ -76,6 +76,18 @@ async def assert_can_view_student(db: AsyncSession, user: User, student_id: uuid
     raise HTTPException(403, "No access to this student")
 
 
+async def assert_can_view_application(db: AsyncSession, user: User, application) -> None:
+    """Resource-level check for anything scoped to ONE application (interview,
+    attempt, match, history). assert_can_view_student alone is not enough for
+    recruiters: a student may apply to several companies, and company B must
+    never read company A's evaluation of that student."""
+    await assert_can_view_student(db, user, application.student_id)
+    if user.role in (UserRole.COMPANY_ADMIN, UserRole.RECRUITER, UserRole.HIRING_MANAGER):
+        job = await db.get(Job, application.job_id)
+        if job is None or job.organization_id not in await member_org_ids(db, user):
+            raise HTTPException(404, "Application not found")
+
+
 async def scope_for(db: AsyncSession, user: User, organization_id: uuid.UUID | None = None) -> TenantScope:
     """Build the retrieval scope for this caller. An explicit organization_id
     must be one the caller belongs to."""

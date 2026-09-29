@@ -25,6 +25,7 @@ from app.schemas.assessments import (
     StartAttemptRequest,
     SubmitAnswerRequest,
 )
+from app.schemas.student_views import StudentAnswerView, StudentAttemptView, coding_status, is_student
 from app.schemas.questions import QuestionOut, QuestionStudentOut
 from app.schemas.rubric import RubricEvaluation
 from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
@@ -128,7 +129,12 @@ async def get_assessment(assessment_id: uuid.UUID, user: User = Depends(get_curr
     return out
 
 
-@router.post("/{assessment_id}/attempts", response_model=AttemptOut)
+def _student_attempt(a: AssessmentAttempt) -> StudentAttemptView:
+    return StudentAttemptView(id=a.id, assessment_id=a.assessment_id, status=a.status,
+                              completed=AssessmentAttemptStatus(a.status) == AssessmentAttemptStatus.SCORED)
+
+
+@router.post("/{assessment_id}/attempts", response_model=StudentAttemptView)
 async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
                         user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
     assessment, _ = await _assessment_access(db, user, await db.get(Assessment, assessment_id))
@@ -139,7 +145,7 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
     existing = await db.scalar(select(AssessmentAttempt).where(
         AssessmentAttempt.assessment_id == assessment_id, AssessmentAttempt.application_id == application.id))
     if existing:
-        return existing
+        return _student_attempt(existing)
     attempt = AssessmentAttempt(assessment_id=assessment_id, application_id=application.id, student_id=profile.id,
                                 status=AssessmentAttemptStatus.IN_PROGRESS)
     db.add(attempt)
@@ -147,7 +153,7 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
         await transition_application(db, application, ApplicationStatus.ASSESSMENT_PENDING, user.id, "assessment started")
     await db.commit()
     await db.refresh(attempt)
-    return attempt
+    return _student_attempt(attempt)
 
 
 async def _own_attempt(db, user, attempt_id) -> AssessmentAttempt:
@@ -164,9 +170,9 @@ async def get_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(
     attempt = await _own_attempt(db, user, attempt_id)
     answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()
     return {
-        "attempt": AttemptOut.model_validate(attempt),
+        "attempt": _student_attempt(attempt),
         "answers": [{"id": a.id, "assessment_question_id": a.assessment_question_id, "answer_text": a.answer_text,
-                     "selected_option_index": a.selected_option_index, "score": a.score} for a in answers],
+                     "selected_option_index": a.selected_option_index} for a in answers],
     }
 
 
@@ -195,14 +201,14 @@ async def autosave_answer(attempt_id: uuid.UUID, payload: SubmitAnswerRequest,
     return {"status": "saved", "answer_id": answer.id}
 
 
-@router.post("/attempts/{attempt_id}/submit", response_model=AttemptOut)
+@router.post("/attempts/{attempt_id}/submit", response_model=StudentAttemptView)
 async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)),
                          db: AsyncSession = Depends(get_db)):
     """Idempotent: re-submitting a scored attempt returns it unchanged; evidence
     rows are keyed per answer so nothing is double-counted."""
     attempt = await _own_attempt(db, user, attempt_id)
     if attempt.status == AssessmentAttemptStatus.SCORED:
-        return attempt
+        return _student_attempt(attempt)
 
     gateway = get_ai_gateway()
     all_aqs = (await db.scalars(select(AssessmentQuestion).where(AssessmentQuestion.assessment_id == attempt.assessment_id))).all()
@@ -284,7 +290,7 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
     await db.commit()
     await recalculate_all_skills_for_student(db, attempt.student_id, user.id, "assessment_submitted")
     await db.refresh(attempt)
-    return attempt
+    return _student_attempt(attempt)
 
 
 @router.get("/attempts/by-application/{application_id}")
@@ -292,16 +298,14 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
                                   db: AsyncSession = Depends(get_db)):
     """Student: their own attempt (to resume after refresh; no answer keys).
     Recruiter of the job's company: scored answers incl. rubric evaluations."""
-    from app.api.tenancy import assert_can_view_student
+    from app.api.tenancy import assert_can_view_application
     from app.models.coding import CodingSubmission, CodingTestResult
 
     application = await db.get(Application, application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
-    await assert_can_view_student(db, user, application.student_id)
-    recruiter = user.role != UserRole.STUDENT
-    if recruiter and user.role != UserRole.PLATFORM_ADMIN:
-        await get_job_for_member(db, user, application.job_id)
+    await assert_can_view_application(db, user, application)  # own / company's own job / enrolled institution
+    student = is_student(user)
     attempt = await db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.application_id == application_id))
     if attempt is None:
         return None
@@ -321,9 +325,19 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
                            "backends": sorted(set((sub.execution_backend or "").split(",")) - {""}) or sorted(
                                {"local_fallback" if "local fallback" in (t.judge0_status or "") else "judge0" for t in tests})}
                 if sub else None}
-        if recruiter or attempt.status == AssessmentAttemptStatus.SCORED:
-            item.update({"question_text": q.question_text, "score": a.score, "is_correct": a.is_correct})
-        if recruiter:
-            item["rubric_evaluation"] = a.rubric_evaluation
+        if student:
+            coding = None
+            if sub:
+                coding = {"language": sub.language, "backend": item["coding"]["backends"],
+                          "status": coding_status(sub.passed_count, sub.total_count, [t.judge0_status for t in tests])}
+            out.append(StudentAnswerView(
+                answer_id=a.id, assessment_question_id=aq.id, question_type=q.question_type, answer_text=a.answer_text,
+                selected_option_index=a.selected_option_index, completed=bool(a.answer_text or a.selected_option_index is not None),
+                question_text=q.question_text if attempt.status == AssessmentAttemptStatus.SCORED else None, coding=coding))
+            continue
+        item.update({"question_text": q.question_text, "score": a.score, "is_correct": a.is_correct,
+                     "rubric_evaluation": a.rubric_evaluation})
         out.append(item)
+    if student:
+        return {"attempt": _student_attempt(attempt), "answers": out}
     return {"attempt": AttemptOut.model_validate(attempt), "answers": out}

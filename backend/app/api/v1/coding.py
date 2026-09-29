@@ -11,7 +11,8 @@ from app.models.coding import CodingSubmission, CodingTestResult
 from app.models.enums import AssessmentAttemptStatus, EvidenceSourceType, QuestionType, UserRole
 from app.models.questions import Question
 from app.models.users import User
-from app.schemas.coding import CodingResultOut, CodingSubmitRequest
+from app.schemas.coding import CodingSubmitRequest
+from app.schemas.student_views import StudentCodingResult, coding_status
 from app.services.coding.judge0_client import ExecutionUnavailable, get_judge0_client
 from app.services.coding.languages import SUPPORTED_LANGUAGES, allowed_for_question, resolve_judge0_ids
 from app.services.evidence.service import record_evidence
@@ -19,7 +20,7 @@ from app.services.evidence.service import record_evidence
 router = APIRouter(prefix="/coding", tags=["coding"])
 
 
-@router.post("/submit", response_model=CodingResultOut)
+@router.post("/submit", response_model=StudentCodingResult)
 async def submit_code(payload: CodingSubmitRequest, user: User = Depends(require_roles(UserRole.STUDENT)),
                       db: AsyncSession = Depends(get_db)):
     """Pass/fail comes only from Judge0 comparing stdout to the stored
@@ -80,10 +81,14 @@ async def submit_code(payload: CodingSubmitRequest, user: User = Depends(require
                           source_id=submission.id, raw_score=float(passed), difficulty=question.difficulty, confidence=0.9,
                           rubric_version="judge0_tests", idempotency_key=f"CODING:attempt:{attempt.id}:aq:{aq.id}")
     await db.commit()
-    return CodingResultOut(submission_id=submission.id, status=submission.status, language=submission.language,
-                           judge0_language_id=submission.judge0_language_id, execution_backend=submission.execution_backend,
-                           passed_count=passed,
-                           total_count=submission.total_count, score=submission.score, tests=visible)
+    # Students get a pass/fail status only: no pass counts, per-test breakdown or score
+    # (docs/SCORE_VISIBILITY.md). Full results stay in coding_test_results for reviewers.
+    first_error = next((v["stderr"] for v in visible if v.get("stderr")), None)
+    return StudentCodingResult(
+        submission_id=submission.id, language=submission.language, execution_backend=submission.execution_backend,
+        result=coding_status(passed, submission.total_count, [v["status"] for v in visible]),
+        message=first_error[:500] if first_error else None,
+    )
 
 
 @router.get("/languages")

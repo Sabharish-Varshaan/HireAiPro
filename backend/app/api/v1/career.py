@@ -13,6 +13,7 @@ from app.models.enums import JobStatus, UserRole
 from app.models.jobs import Job
 from app.models.skills import Skill
 from app.models.users import User
+from app.schemas.student_views import StudentGapView
 from app.schemas.career import CareerRoadmap, CareerStep, ResourceRef
 from app.services.career.gaps import calculate_skill_gaps
 
@@ -30,7 +31,13 @@ async def _target_job(db, job_id) -> Job:
 async def gaps(target_job_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
     await _target_job(db, target_job_id)
     me = await get_student_profile(db, user)
-    return [] if me is None else await calculate_skill_gaps(db, me.id, target_job_id)
+    if me is None:
+        return []
+    # gaps are computed deterministically (already ordered by gap x importance) but the
+    # student gets priority order and status only - no levels, required levels or gap sizes
+    return [StudentGapView(skill_id=g["skill_id"], skill_name=g["skill_name"], priority=i + 1,
+                           status="not_yet_demonstrated" if not g["current_level"] else "below_requirement")
+            for i, g in enumerate(await calculate_skill_gaps(db, me.id, target_job_id))]
 
 
 @router.post("/roadmap/{target_job_id}", response_model=CareerRoadmap)

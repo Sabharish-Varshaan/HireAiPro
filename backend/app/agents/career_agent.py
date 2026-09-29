@@ -17,6 +17,7 @@ from pydantic_ai import RunContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.schemas.student_views import skill_band
 from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent, tool_uuid
 from app.models.career import LearningPath, LearningPathStep, LearningResource
 from app.models.evidence import StudentSkill
@@ -77,27 +78,28 @@ async def get_student_skills(ctx: RunContext[CareerDeps]) -> list[dict]:
     out = []
     for r in rows:
         s = await d.db.get(Skill, r.skill_id)
-        out.append({"skill": s.canonical_name if s else str(r.skill_id), "level": round(r.estimated_level, 2),
-                    "confidence": round(r.confidence, 2)})
+        # qualitative only: the roadmap text is shown to the student, who must not see scores
+        out.append({"skill": s.canonical_name if s else str(r.skill_id), "band": skill_band(r.estimated_level)})
     d.log.record("get_student_skills", count=len(out))
     return out
 
 
 @career_agent.tool
 async def calculate_skill_gaps(ctx: RunContext[CareerDeps]) -> list[dict]:
-    """Deterministic gaps: required level minus current level, ordered by gap × importance."""
+    """Deterministic gaps ordered by gap × importance (priority 1 = most important). No numbers:
+    the roadmap is student-facing."""
     d = ctx.deps
     d.gaps = await gap_service.calculate_skill_gaps(d.db, d.student_id, d.job.id)
     d.log.record("calculate_skill_gaps", gaps=len(d.gaps))
     # Compact on purpose: this result is re-sent on every later model turn,
     # so it's capped (top 8 gaps, <=2 prerequisites/resources each).
     out = []
-    for g in d.gaps[:8]:
+    for priority, g in enumerate(d.gaps[:8], start=1):
         sid = str(g["skill_id"])
         pre = (await gap_service.get_prerequisites(d.db, g["skill_id"]))
         d.prereqs[sid] = [str(p.id) for p in pre]
         out.append({
-            "id": sid, "skill": g["skill_name"], "gap": round(g["gap"], 2),
+            "id": sid, "skill": g["skill_name"], "priority": priority,
             "resources": [str(r.id) for r in (await _resources(d, sid))[:2]],
             "prereqs": [{"id": str(p.id), "skill": p.canonical_name,
                          "resources": [str(r.id) for r in (await _resources(d, str(p.id)))[:2]]} for p in pre[:2]],

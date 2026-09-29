@@ -18,6 +18,7 @@ from app.models.interviews import Interview, InterviewTurn
 from app.models.misc import Notification
 from app.models.skills import Skill
 from app.models.users import User
+from app.schemas.student_views import skill_band
 from app.services.audit import audit
 from app.services.evidence.estimator import recalculate_all_skills_for_student
 from app.services.storage.service import get_storage_service
@@ -72,9 +73,11 @@ async def my_data(user: User = Depends(require_roles(UserRole.STUDENT)), db: Asy
         "profile": {"headline": me.headline, "bio": me.bio, "location": me.location, "resume_status": me.resume_parse_status},
         "documents": [{"id": d.id, "type": d.doc_type, "filename": d.filename, "size_bytes": d.size_bytes, "uploaded_at": d.created_at}
                       for d in docs],
-        "skill_estimates": [{"skill": names.get(s.skill_id), "level": s.estimated_level, "confidence": s.confidence} for s in skills],
-        "evidence": [{"skill": names.get(e.skill_id), "source_type": e.source_type, "score": e.normalized_score,
-                      "confidence": e.confidence, "created_at": e.created_at} for e in evidence],
+        # hiring evaluations (levels, scores, rubric values) are held for employers/institutions and
+        # are not part of the student export (docs/SCORE_VISIBILITY.md); qualitative bands are.
+        "skill_estimates": [{"skill": names.get(s.skill_id), "band": skill_band(s.estimated_level)} for s in skills],
+        "evidence": [{"skill": names.get(e.skill_id), "source_type": e.source_type, "created_at": e.created_at}
+                     for e in evidence],
         "interview_transcripts": [{"interview_id": t.interview_id, "question": t.question_text, "answer": t.student_answer_text,
                                    "answer_source": t.answer_source, "has_audio": t.audio_document_id is not None} for t in turns],
         "applications": [{"id": a.id, "job_id": a.job_id, "status": a.status, "created_at": a.created_at} for a in apps],

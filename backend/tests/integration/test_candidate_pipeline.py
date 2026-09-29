@@ -89,19 +89,27 @@ async def test_full_candidate_pipeline(client, monkeypatch):
     run = await client.post("/coding/submit", headers=hs, json={"assessment_answer_id": saved["answer_id"],
                                                                 "question_id": str(qs[2].id), "language": "python", "source_code": SOLUTION})
     assert run.status_code == 200, run.text
-    assert run.json()["passed_count"] == 3  # decided by Judge0, not an LLM
+    assert run.json()["result"] == "ALL_TESTS_PASSED" and "passed_count" not in run.json()  # student: status only
     wrong = await client.post("/coding/submit", headers=hs, json={"assessment_answer_id": saved["answer_id"],
                                                                   "question_id": str(qs[2].id), "language": "python",
                                                                   "source_code": "print(0)"})
-    assert wrong.json()["passed_count"] == 1  # only the [0] case
+    assert wrong.json()["result"] == "SOME_TESTS_FAILED"
+    async with AsyncSessionLocal() as db:  # reviewer-side record: decided by Judge0, not an LLM
+        from app.models.coding import CodingSubmission
+        subs = (await db.scalars(select(CodingSubmission).where(CodingSubmission.question_id == qs[2].id)
+                                 .order_by(CodingSubmission.created_at))).all()
+        assert [x.passed_count for x in subs] == [3, 1]  # only the [0] case passes for print(0)
     await client.post("/coding/submit", headers=hs, json={"assessment_answer_id": saved["answer_id"],
                                                           "question_id": str(qs[2].id), "language": "python", "source_code": SOLUTION})
 
     sub = await client.post(f"/assessments/attempts/{attempt['id']}/submit", headers=hs)
-    assert sub.status_code == 200 and sub.json()["status"] == "SCORED"
-    assert sub.json()["total_score"] == pytest.approx((1 + 0.7 + 1) / 3)
+    assert sub.status_code == 200 and sub.json()["status"] == "SCORED" and sub.json()["completed"]
+    assert "total_score" not in sub.json()  # never sent to the student
+    async with AsyncSessionLocal() as db:
+        from app.models.assessments import AssessmentAttempt
+        assert (await db.get(AssessmentAttempt, attempt["id"])).total_score == pytest.approx((1 + 0.7 + 1) / 3)
     again = await client.post(f"/assessments/attempts/{attempt['id']}/submit", headers=hs)
-    assert again.json()["total_score"] == sub.json()["total_score"]
+    assert again.json() == sub.json()  # idempotent re-submit
 
     async with AsyncSessionLocal() as db:
         ev = (await db.scalars(select(SkillEvidence).where(SkillEvidence.student_id == st.id))).all()
@@ -109,11 +117,18 @@ async def test_full_candidate_pipeline(client, monkeypatch):
         assert kinds == ["CODING", "MCQ", "TECHNICAL_ASSESSMENT"]  # one row each; coding re-runs updated in place
         assert next(e for e in ev if e.source_type == "CODING").normalized_score == 1.0
 
-    skills = {s["skill_name"]: s for s in (await client.get(f"/evidence/students/{st.id}/skills", headers=hs)).json()}
+    # reviewer (the company the student applied to) sees exact levels ...
+    skills = {s["skill_name"]: s for s in (await client.get(f"/evidence/students/{st.id}/skills", headers=hr)).json()}
     assert skills["Python"]["estimated_level"] == pytest.approx((0.40 * 1.0 + 0.15 * 1.0) / 0.55)
     assert skills["PostgreSQL"]["estimated_level"] == pytest.approx(0.7)
-    drill = (await client.get(f"/evidence/students/{st.id}/skills/{skills['Python']['skill_id']}", headers=hs)).json()
+    # ... the student sees qualitative bands only
+    mine = {s["skill_name"]: s for s in (await client.get(f"/evidence/students/{st.id}/skills", headers=hs)).json()}
+    assert mine["Python"]["band"] == "strong" and "estimated_level" not in mine["Python"] and "confidence" not in mine["Python"]
+    drill = (await client.get(f"/evidence/students/{st.id}/skills/{skills['Python']['skill_id']}", headers=hr)).json()
     assert drill["estimate"]["evidence_count"] == 2 and len(drill["evidence"]) == 2
+    own = (await client.get(f"/evidence/students/{st.id}/skills/{skills['Python']['skill_id']}", headers=hs)).json()
+    assert own["band"] == "strong" and "estimate" not in own and len(own["evidence"]) == 2
+    assert all("normalized_score" not in e and "confidence" not in e for e in own["evidence"])
 
     m = await client.post(f"/matching/applications/{app_id}/compute", headers=hr)
     assert m.status_code == 200

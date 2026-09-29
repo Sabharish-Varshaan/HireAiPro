@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_roles
-from app.api.tenancy import assert_can_view_student, get_job_for_member, get_student_profile, require_org_member
+from app.api.tenancy import assert_can_view_application, assert_can_view_student, get_job_for_member, get_student_profile, require_org_member
 from app.core.database import get_db
 from app.models.applications import Application, ApplicationStatusHistory
 from app.models.enums import ApplicationStatus, JobStatus, UserRole
@@ -14,6 +14,7 @@ from app.models.matching import Match
 from app.models.organizations import Organization
 from app.models.students import StudentProfile
 from app.models.users import User
+from app.schemas.student_views import StudentApplicationView, is_student
 from app.schemas.applications import ApplicationCreate, ApplicationOut, ApplicationStatusUpdate
 from app.services.applications.service import RECRUITER_DECISIONS, InvalidTransition, transition_application
 from app.services.audit import audit
@@ -22,6 +23,11 @@ from app.services.notifications import notify
 router = APIRouter(prefix="/applications", tags=["applications"])
 
 RECRUITER_ROLES = (UserRole.COMPANY_ADMIN, UserRole.RECRUITER, UserRole.HIRING_MANAGER)
+
+
+def _student_view(a: ApplicationOut) -> StudentApplicationView:
+    return StudentApplicationView(id=a.id, job_id=a.job_id, status=a.status, job_title=a.job_title,
+                                  organization_name=a.organization_name, applied_at=a.applied_at)
 
 
 async def _enrich(db, a: Application) -> ApplicationOut:
@@ -37,7 +43,7 @@ async def _enrich(db, a: Application) -> ApplicationOut:
     })
 
 
-@router.post("", response_model=ApplicationOut)
+@router.post("", response_model=StudentApplicationView)
 async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_roles(UserRole.STUDENT)),
                        db: AsyncSession = Depends(get_db)):
     me = await get_student_profile(db, user)
@@ -62,16 +68,16 @@ async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_
     await notify(db, user.id, "assessment_assigned", "Assessment ready to take", body=job.title,
                  link=f"/student/applications/{application.id}", dedupe_key=f"app:{application.id}:assessment_assigned")
     await db.commit()
-    return await _enrich(db, application)
+    return _student_view(await _enrich(db, application))
 
 
-@router.get("/mine", response_model=list[ApplicationOut])
+@router.get("/mine", response_model=list[StudentApplicationView])
 async def my_applications(user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
     me = await get_student_profile(db, user)
     if me is None:
         return []
     rows = (await db.scalars(select(Application).where(Application.student_id == me.id).order_by(Application.created_at.desc()))).all()
-    return [await _enrich(db, a) for a in rows]
+    return [_student_view(await _enrich(db, a)) for a in rows]
 
 
 @router.get("/job/{job_id}", response_model=list[ApplicationOut])
@@ -83,17 +89,14 @@ async def applications_for_job(job_id: uuid.UUID, user: User = Depends(require_r
     return sorted(out, key=lambda a: a.match_score or -1, reverse=True)
 
 
-@router.get("/{application_id}", response_model=ApplicationOut)
+@router.get("/{application_id}", response_model=None)
 async def get_application(application_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     a = await db.get(Application, application_id)
     if a is None:
         raise HTTPException(404, "Application not found")
-    await assert_can_view_student(db, user, a.student_id)
-    if user.role != UserRole.STUDENT and user.role != UserRole.PLATFORM_ADMIN:
-        job = await db.get(Job, a.job_id)
-        if user.role in RECRUITER_ROLES:
-            await require_org_member(db, user, job.organization_id)
-    return await _enrich(db, a)
+    await assert_can_view_application(db, user, a)
+    out = await _enrich(db, a)
+    return _student_view(out) if is_student(user) else out
 
 
 @router.get("/{application_id}/history")
@@ -101,10 +104,13 @@ async def application_history(application_id: uuid.UUID, user: User = Depends(ge
     a = await db.get(Application, application_id)
     if a is None:
         raise HTTPException(404, "Application not found")
-    await assert_can_view_student(db, user, a.student_id)
+    await assert_can_view_application(db, user, a)
     rows = (await db.scalars(select(ApplicationStatusHistory).where(ApplicationStatusHistory.application_id == a.id)
                              .order_by(ApplicationStatusHistory.created_at))).all()
-    return [{"from": r.from_status, "to": r.to_status, "at": r.created_at, "note": r.note,
+    student = is_student(user)
+    return [{"from": r.from_status, "to": r.to_status, "at": r.created_at,
+             # reviewer decision notes are internal; students see their own/system notes only
+             "note": r.note if (not student or r.changed_by_user_id in (None, user.id)) else None,
              "by_system": r.changed_by_user_id is None} for r in rows]
 
 

@@ -9,6 +9,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.knowledge import KnowledgeChunk, KnowledgeSource
 from app.services.ai_gateway import vector_store
 from app.services.ai_gateway.vector_store import TenantScope
+from qdrant_client import models as qm
 from app.services.knowledge import service as ks
 from app.services.knowledge.rag import grounded_answer
 from tests.factories import skill, uniq
@@ -51,8 +52,9 @@ async def test_ingest_embed_store_retrieve_rerank_with_provenance(monkeypatch):
         n_pg = await db.scalar(select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.document_id == src_id))
         assert src.status == "READY" and src.embedding_model == "BAAI/bge-m3" and src.chunk_count == n_pg >= 1
     # every chunk is in Qdrant with full provenance payload
-    hits = vector_store.search("knowledge_chunks", [0.0] * 1023 + [1.0], TenantScope(), limit=100)
-    mine = [h for h in hits if h.payload["document_id"] == str(src_id)]
+    # filter by this document (the test collection grows across runs, so a top-N probe is unreliable)
+    doc_filter = [qm.FieldCondition(key="document_id", match=qm.MatchValue(value=str(src_id)))]
+    mine = vector_store.search("knowledge_chunks", [0.0] * 1023 + [1.0], TenantScope(), limit=100, extra_must=doc_filter)
     assert len(mine) == n_pg
     for h in mine:
         assert {"document_id", "chunk_id", "source_uri", "skill_ids", "visibility", "content_hash", "embedding_model",

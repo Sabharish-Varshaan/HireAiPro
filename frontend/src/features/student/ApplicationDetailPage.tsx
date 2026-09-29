@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Badge, Button, Card, Empty, ErrorBox, Loading, pct } from "../../components/ui";
+import { Badge, Button, Card, Empty, ErrorBox, Loading } from "../../components/ui";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
 
@@ -52,13 +52,13 @@ export default function ApplicationDetailPage() {
         <ErrorBox error={startInterview.error} />
       </Card>
 
-      <Card title="Your match and skill gaps">
-        {!match.data ? <Empty>Calculated after your interview.</Empty> : (
+      <Card title="Your strengths and skills to develop">
+        {!match.data ? <Empty>Available after your interview.</Empty> : (
           <div className="space-y-2 text-sm">
-            <p>Overall fit: <b>{pct(match.data.match_score, 1)}</b> <span className="text-xs text-gray-500">(required skills {pct(match.data.required_skill_fit)}, preferred {pct(match.data.preferred_skill_fit)})</span></p>
-            {[["To strengthen", match.data.partial_skills, "amber"], ["Gaps", match.data.missing_skills, "red"]].map(([t, items, tone]: any) => (
+            {[["Strengths", match.data.strengths, "green"], ["Skills to develop", match.data.skills_to_develop, "amber"],
+              ["Not yet demonstrated", match.data.missing_skills, "red"]].map(([t, items, tone]: any) => (
               <div key={t}><p className="text-xs font-medium">{t}</p>
-                <div className="flex flex-wrap gap-1">{(items ?? []).map((s: any) => <Badge key={s.skill_id} tone={tone}>{s.skill_name}</Badge>)}
+                <div className="flex flex-wrap gap-1">{(items ?? []).map((name: string) => <Badge key={name} tone={tone}>{name}</Badge>)}
                   {(items ?? []).length === 0 && <span className="text-xs text-gray-400">none</span>}</div></div>
             ))}
             <Link className="underline text-sm" to={`/student/career/${a.job_id}`}>Build my learning roadmap →</Link>

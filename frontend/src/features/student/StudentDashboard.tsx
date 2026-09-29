@@ -1,6 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
+import { Badge } from "../../components/ui";
+
+const BAND_LABEL: Record<string, string> = { strong: "Strong", developing: "Developing", emerging: "Emerging", not_yet_demonstrated: "Not yet demonstrated" };
+const BAND_TONE: Record<string, string> = { strong: "green", developing: "blue", emerging: "amber", not_yet_demonstrated: "gray" };
 
 export default function StudentDashboard() {
   const { data: profile } = useQuery({
@@ -44,12 +48,7 @@ export default function StudentDashboard() {
         {(skills ?? []).map((s: any) => (
           <div key={s.skill_id} className="p-3 flex items-center justify-between text-sm">
             <Link className="text-gray-700 underline" to={`/student/skills/${s.skill_id}`}>{s.skill_name}</Link>
-            <div className="flex items-center gap-2">
-              <div className="w-32 h-2 bg-gray-100 rounded-full overflow-hidden">
-                <div className="h-full bg-gray-900" style={{ width: `${s.estimated_level * 100}%` }} />
-              </div>
-              <span className="text-xs text-gray-500 w-10 text-right">{Math.round(s.estimated_level * 100)}%</span>
-            </div>
+            <Badge tone={BAND_TONE[s.band] ?? "gray"}>{BAND_LABEL[s.band] ?? s.band}</Badge>
           </div>
         ))}
       </div>

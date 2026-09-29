@@ -5,12 +5,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_roles
-from app.api.tenancy import assert_can_view_student, get_job_for_member
+from app.api.tenancy import assert_can_view_application, assert_can_view_student, get_job_for_member
 from app.core.database import get_db
 from app.models.applications import Application
 from app.models.enums import UserRole
 from app.models.matching import Match
 from app.models.users import User
+from app.schemas.student_views import StudentMatchView, is_student
 from app.schemas.matching import MatchOut
 from app.services.matching.engine import WEIGHTS, compute_match_for_application
 
@@ -36,17 +37,19 @@ async def compute_match(application_id: uuid.UUID, user: User = Depends(require_
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.get("/applications/{application_id}", response_model=MatchOut)
+@router.get("/applications/{application_id}", response_model=None)
 async def get_match(application_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     a = await db.get(Application, application_id)
     if a is None:
         raise HTTPException(404, "Application not found")
-    await assert_can_view_student(db, user, a.student_id)
-    if user.role in RECRUITER_ROLES:
-        await get_job_for_member(db, user, a.job_id)
+    await assert_can_view_application(db, user, a)
     m = await db.scalar(select(Match).where(Match.application_id == application_id))
     if m is None:
         raise HTTPException(404, "Match not computed yet")
+    if is_student(user):  # qualitative only: no match/fit/confidence/relevance numbers
+        names = lambda xs: [x.get("skill_name") for x in (xs or []) if x.get("skill_name")]  # noqa: E731
+        return StudentMatchView(application_id=m.application_id, strengths=names(m.strong_skills),
+                                skills_to_develop=names(m.partial_skills), missing_skills=names(m.missing_skills))
     return _out(m)
 
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from pydantic_ai import ModelRetry, RunContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.agents.runtime import ToolLog, build_agent, run_agent, run_llm_agent
 from app.models.assessments import Assessment
 from app.models.enums import QuestionStatus as QS, QuestionType
@@ -25,7 +26,6 @@ from app.services.assessments import generator as gen
 from app.services.assessments.blueprint import Blueprint, SkillAllocation
 from app.services.audit import audit
 
-MAX_GENERATION_ATTEMPTS_PER_SLOT = 2
 
 
 @dataclass
@@ -40,6 +40,8 @@ class SkillWork:
     knowledge_chunks: int | None = None
     company_searched: bool = False
     platform_searched: bool = False
+    generation_attempts: int = 0
+    rejections: dict[QuestionType, list[str]] = field(default_factory=dict)  # compact reasons, per type
 
     def remaining(self, qtype: QuestionType) -> int:
         return self.need.get(qtype, 0) - len(self.picked.get(qtype, []))
@@ -186,23 +188,39 @@ async def _generate_for(d: AssessmentDeps, skill_index: int) -> dict:
     if not w.platform_searched:
         await _platform(d, skill_index)
     created = []
+    per_slot = max(1, get_settings().ASSESSMENT_SLOT_GENERATION_ATTEMPTS)
     for qtype in list(w.need):
-        slot = 0
-        attempts = 0
-        while w.remaining(qtype) > 0 and attempts < w.need[qtype] * MAX_GENERATION_ATTEMPTS_PER_SLOT:
-            q = await gen.generate_missing_question(
-                d.db, job_id=d.job.id, organization_id=d.job.organization_id, skill_id=w.alloc.skill_id,
-                skill_name=w.alloc.skill_name, qtype=qtype, difficulty="medium", slot=slot,
-            )
-            slot += 1
-            attempts += 1
-            if QS(q.status) == QS.VALIDATED and q.id not in w.all_ids():
-                w.picked.setdefault(qtype, []).append(q.id)
-                w.generated += 1
-                w.grounded += 1 if q.source_refs else 0
-                created.append(str(q.id))
-                await audit(d.db, d.actor_user_id, "question_generated", "question", q.id,
-                            organization_id=d.job.organization_id, metadata={"grounded": bool(q.source_refs)})
+        slot_index = 0
+        while w.remaining(qtype) > 0:
+            # One slot: initial generation + bounded replacements. Each replacement is told
+            # why the previous candidate failed and may not repeat a rejected candidate.
+            reasons: list[str] = []
+            rejected_hashes: set[str] = set()
+            filled = False
+            for attempt in range(per_slot):
+                q = await gen.generate_missing_question(
+                    d.db, job_id=d.job.id, organization_id=d.job.organization_id, skill_id=w.alloc.skill_id,
+                    skill_name=w.alloc.skill_name, qtype=qtype, difficulty="medium",
+                    slot=slot_index * 100 + attempt, avoid=list(reasons), rejected_hashes=set(rejected_hashes),
+                )
+                w.generation_attempts += 1
+                if QS(q.status) == QS.VALIDATED and q.id not in w.all_ids():
+                    w.picked.setdefault(qtype, []).append(q.id)
+                    w.generated += 1
+                    w.grounded += 1 if q.source_refs else 0
+                    created.append(str(q.id))
+                    await audit(d.db, d.actor_user_id, "question_generated", "question", q.id,
+                                organization_id=d.job.organization_id,
+                                metadata={"grounded": bool(q.source_refs), "attempt": attempt + 1})
+                    filled = True
+                    break
+                why = "; ".join((q.validation_report or {}).get("reasons") or []) or f"not usable ({q.status})"
+                reasons.append(why[:200])
+                rejected_hashes.add(gen.content_hash(q.question_text))
+                w.rejections.setdefault(qtype, []).append(why[:200])
+            slot_index += 1
+            if not filled:
+                break  # this slot stays uncovered; do not burn further attempts on the same type
     return {"created_question_ids": created, **_summary(w)}
 
 
@@ -272,7 +290,21 @@ async def _create(d: AssessmentDeps) -> AssessmentPlan:
         covered_skills=covered, missing_coverage=missing,
         estimated_duration_minutes=d.blueprint.estimated_duration_minutes,
     )
-    d.assessment.plan = {**plan.model_dump(mode="json"), "dropped_duplicates": dropped}
+    required = sum(sum(w.need.values()) for w in d.work)
+    covered = sum(len(ids) for w in d.work for ids in w.picked.values())
+    uncovered = [
+        {"skill": w.alloc.skill_name, "question_type": t.value, "missing": w.remaining(t),
+         "rejection_reasons": (w.rejections.get(t) or [])[-3:]}
+        for w in d.work for t in w.need if w.remaining(t) > 0
+    ]
+    coverage = {
+        "required_slots": required, "covered_slots": covered, "uncovered_slots": uncovered,
+        "coverage_percentage": round(100 * covered / required, 1) if required else 100.0,
+        "generation_attempts": sum(w.generation_attempts for w in d.work),
+        "rejection_reasons": [r for w in d.work for rs in w.rejections.values() for r in rs][-20:],
+        "attempts_per_slot": get_settings().ASSESSMENT_SLOT_GENERATION_ATTEMPTS,
+    }
+    d.assessment.plan = {**plan.model_dump(mode="json"), "dropped_duplicates": dropped, "coverage": coverage}
     await d.db.flush()
     return plan
 

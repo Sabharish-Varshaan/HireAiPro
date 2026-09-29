@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { api } from "../../api/client";
-import { Badge, Button, ErrorBox, Loading, apiError, pct } from "../../components/ui";
+import { Button, ErrorBox, Loading, apiError } from "../../components/ui";
 
 function useRecorder() {
   const rec = useRef<MediaRecorder | null>(null);
@@ -70,12 +70,12 @@ export function InterviewRunner({ interviewId }: { interviewId: string }) {
     <div className="space-y-4">
       {list.map((t) => (
         <div key={t.id} className="border border-gray-200 rounded-md p-3 space-y-1">
-          <p className="text-xs text-gray-500">Question {t.turn_index + 1} · {t.skill_name} · <Badge tone="gray">{t.difficulty}</Badge></p>
+          <p className="text-xs text-gray-500">Question {t.turn_index + 1} · {t.skill_name}</p>
           <p className="text-sm text-gray-900">{t.question_text}</p>
           {t.student_answer_text && (
             <div className="text-sm text-gray-600 border-t border-gray-100 pt-2">
               <p>{t.student_answer_text} <span className="text-xs text-gray-400">({t.answer_source})</span></p>
-              {t.rubric_evaluation && <p className="text-xs text-gray-500">Rubric: accuracy {pct(t.rubric_evaluation.concept_accuracy)}, reasoning {pct(t.rubric_evaluation.reasoning)}, completeness {pct(t.rubric_evaluation.completeness)}</p>}
+              {t.answered && <p className="text-xs text-gray-500">Answer received.</p>}
             </div>
           )}
         </div>

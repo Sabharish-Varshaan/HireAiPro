@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.models.evidence import SkillEvidence, StudentSkill
 from app.models.skills import Skill
 from app.models.users import User
+from app.schemas.student_views import StudentEvidenceView, StudentSkillView, is_student, skill_band
 from app.schemas.evidence import SkillEvidenceOut, StudentSkillOut
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
@@ -19,7 +20,14 @@ async def _names(db, ids) -> dict:
     return {s.id: s.canonical_name for s in (await db.scalars(select(Skill).where(Skill.id.in_(set(ids))))).all()}
 
 
-@router.get("/students/{student_id}/evidence", response_model=list[SkillEvidenceOut])
+def _counts(source_type) -> bool:
+    from app.models.enums import EvidenceSourceType
+    from app.services.evidence.estimator import BASE_WEIGHTS
+
+    return BASE_WEIGHTS.get(EvidenceSourceType(source_type), 0) > 0
+
+
+@router.get("/students/{student_id}/evidence", response_model=None)
 async def get_student_evidence(student_id: uuid.UUID, skill_id: uuid.UUID | None = None,
                                user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     await assert_can_view_student(db, user, student_id)
@@ -28,15 +36,21 @@ async def get_student_evidence(student_id: uuid.UUID, skill_id: uuid.UUID | None
         stmt = stmt.where(SkillEvidence.skill_id == skill_id)
     rows = (await db.scalars(stmt.order_by(SkillEvidence.created_at.desc()))).all()
     names = await _names(db, [r.skill_id for r in rows])
+    if is_student(user):
+        return [StudentEvidenceView(id=r.id, skill_id=r.skill_id, skill_name=names.get(r.skill_id), source_type=r.source_type,
+                                    created_at=r.created_at, counts_toward_skill=_counts(r.source_type)) for r in rows]
     return [SkillEvidenceOut.model_validate(r).model_copy(update={"skill_name": names.get(r.skill_id)}) for r in rows]
 
 
-@router.get("/students/{student_id}/skills", response_model=list[StudentSkillOut])
+@router.get("/students/{student_id}/skills", response_model=None)
 async def get_student_skills(student_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     await assert_can_view_student(db, user, student_id)
     rows = (await db.scalars(select(StudentSkill).where(StudentSkill.student_id == student_id)
                              .order_by(StudentSkill.estimated_level.desc()))).all()
     names = await _names(db, [r.skill_id for r in rows])
+    if is_student(user):
+        return [StudentSkillView(skill_id=r.skill_id, skill_name=names.get(r.skill_id), band=skill_band(r.estimated_level),
+                                 evidence_count=r.evidence_count) for r in rows]
     return [StudentSkillOut.model_validate(r).model_copy(update={"skill_name": names.get(r.skill_id)}) for r in rows]
 
 
@@ -54,6 +68,14 @@ async def skill_detail(student_id: uuid.UUID, skill_id: uuid.UUID, user: User = 
     from app.services.evidence.estimator import BASE_WEIGHTS
     from app.models.enums import EvidenceSourceType
 
+    if is_student(user):
+        return {
+            "skill": {"id": skill_id, "canonical_name": skill.canonical_name if skill else None, "category": skill.category if skill else None},
+            "band": skill_band(est.estimated_level) if est else "not_yet_demonstrated",
+            "evidence": [StudentEvidenceView(id=e.id, skill_id=e.skill_id, skill_name=skill.canonical_name if skill else None,
+                                             source_type=e.source_type, created_at=e.created_at,
+                                             counts_toward_skill=_counts(e.source_type)) for e in ev],
+        }
     return {
         "skill": {"id": skill_id, "canonical_name": skill.canonical_name if skill else None, "category": skill.category if skill else None},
         "estimate": StudentSkillOut.model_validate(est) if est else None,
@@ -66,9 +88,12 @@ async def skill_detail(student_id: uuid.UUID, skill_id: uuid.UUID, user: User = 
     }
 
 
-@router.post("/students/{student_id}/recalculate", response_model=list[StudentSkillOut])
+@router.post("/students/{student_id}/recalculate", response_model=None)
 async def recalculate_student_skills(student_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     await assert_can_view_student(db, user, student_id)
     from app.services.evidence.estimator import recalculate_all_skills_for_student
 
-    return await recalculate_all_skills_for_student(db, student_id, user.id, "manual")
+    rows = await recalculate_all_skills_for_student(db, student_id, user.id, "manual")
+    if is_student(user):
+        return {"recalculated": len(rows)}
+    return [StudentSkillOut.model_validate(r) for r in rows]

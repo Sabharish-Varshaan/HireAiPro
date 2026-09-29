@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Badge, Button, Card, Empty, ErrorBox, Loading, Table, pct } from "../../components/ui";
+import { Badge, Button, Card, Empty, ErrorBox, Loading, Table } from "../../components/ui";
 
 export default function CareerPage() {
   const { jobId } = useParams();
@@ -20,15 +20,15 @@ export default function CareerPage() {
   return (
     <div className="max-w-4xl space-y-5">
       <Link to="/student/applications" className="text-xs text-gray-500 underline">← Applications</Link>
-      <Card title="Skill gaps for this role (deterministic: required level − your verified level)">
+      <Card title="Skills to develop for this role (most important first)">
         {gaps.isLoading && <Loading />}
         <ErrorBox error={gaps.error} onRetry={gaps.refetch} />
-        {gaps.data?.length === 0 && <Empty>No gaps — your verified levels meet every requirement.</Empty>}
+        {gaps.data?.length === 0 && <Empty>No gaps — your verified skills meet every requirement.</Empty>}
         {gaps.data?.length > 0 && (
-          <Table head={["Skill", "Your level", "Required", "Gap", "Importance"]}>
+          <Table head={["Priority", "Skill", "Status"]}>
             {gaps.data.map((g: any) => (
-              <tr key={g.skill_id}><td className="py-1 pr-3">{g.skill_name}</td><td className="pr-3">{pct(g.current_level)}</td>
-                <td className="pr-3">{pct(g.required_level)}</td><td className="pr-3">{pct(g.gap)}</td><td>{pct(g.importance)}</td></tr>
+              <tr key={g.skill_id}><td className="py-1 pr-3">{g.priority}</td><td className="pr-3">{g.skill_name}</td>
+                <td>{g.status === "not_yet_demonstrated" ? "Not yet demonstrated" : "Below the role's requirement"}</td></tr>
             ))}
           </Table>
         )}

@@ -29,6 +29,7 @@ from app.services.knowledge.rag import format_context, select_refs
 from app.services.knowledge.service import retrieve
 from app.services.questions.governance import USABLE_OWN_COMPANY, USABLE_PLATFORM
 from app.services.questions.validator import (
+    ValidationResult,
     content_hash,
     index_question,
     validate_semantics,
@@ -147,10 +148,17 @@ async def generate_missing_question(
     qtype: QuestionType,
     difficulty: str,
     slot: int,
+    avoid: list[str] | None = None,
+    rejected_hashes: set[str] | None = None,
 ) -> Question:
     """Generates (or returns the previously generated) question for this slot.
     Result is VALIDATED only if every validator check passes; otherwise it is
-    kept as DRAFT with the failing checks recorded."""
+    kept as DRAFT with the failing checks recorded.
+
+    avoid: compact reasons earlier candidates for the same slot were rejected
+    (fed to the model so a replacement fixes them, not the whole old prompt).
+    rejected_hashes: content hashes of those candidates; an identical repeat is
+    rejected without further validation."""
     gkey = f"{job_id}:{skill_id}:{qtype.value}:{slot}"
     existing = await db.scalar(select(Question).where(Question.generation_key == gkey))
     if existing:
@@ -160,6 +168,9 @@ async def generate_missing_question(
 
     docs = retrieve_knowledge(skill_name, skill_id, organization_id, qtype)
     context = f"CONTEXT:\n{format_context(docs)}\n\n" if docs else ""
+    if avoid:
+        context += ("A previous candidate for this slot was rejected: " + "; ".join(a[:160] for a in avoid[-3:])
+                    + ". Write a DIFFERENT question that avoids these problems.\n\n")
     gateway = get_ai_gateway()
     common = dict(system=GEN_SYSTEM, task_type="question_generation", related_entity_type="job", related_entity_id=job_id)
     fields: dict = {}
@@ -179,7 +190,7 @@ async def generate_missing_question(
         fields = dict(expected_concepts=g.expected_concepts, rubric={"criteria": g.rubric_criteria, "version": "rubric_v1"})
     else:
         g = await gateway.generate_structured(
-            f"Write one {difficulty} language-neutral coding problem testing '{skill_name}' that can be solved in "
+            f"{context}Write one {difficulty} language-neutral coding problem testing '{skill_name}' that can be solved in "
             "Python, JavaScript or C++. The program reads ONE line of stdin containing a JSON value (e.g. [1,2,3]) "
             "and prints the answer. Do NOT include starter code or any part of a solution. Give 3 test_cases as "
             '{"input": "<exact stdin text>", "expected_output": "<exact stdout text>"}.',
@@ -190,10 +201,14 @@ async def generate_missing_question(
         fields = dict(starter_code=None, test_cases=g.test_cases)
 
     refs = select_refs(docs, getattr(g, "used_context", []) or []) if docs else []
-    result = validate_structure(
-        qtype, g.question_text, difficulty, fields.get("expected_concepts"), fields.get("rubric"),
-        fields.get("options"), fields.get("correct_option_index"), fields.get("test_cases"),
-    )
+    if rejected_hashes and content_hash(g.question_text) in rejected_hashes:
+        result = ValidationResult(ok=False, checks={"not_repeat_of_rejected": False},
+                                  reasons=["repeat of a candidate already rejected for this slot"])
+    else:
+        result = validate_structure(
+            qtype, g.question_text, difficulty, fields.get("expected_concepts"), fields.get("rubric"),
+            fields.get("options"), fields.get("correct_option_index"), fields.get("test_cases"),
+        )
     if result.ok:
         result = validate_semantics(
             result, g.question_text, skill_name, skill_id, TenantScope(organization_id=organization_id),
