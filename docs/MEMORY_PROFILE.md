@@ -59,6 +59,9 @@ MODEL_IDLE_UNLOAD_SECONDS=1200 .venv/bin/celery -A app.workers.celery_app worker
 - Whisper is not warmed (first transcription ~8 s). Ollama stays unloaded (Groq/Luna serve normal
   traffic). Keep `APP_ENV=demo` so unsandboxed code execution can never be enabled.
 - Close other heavy apps (Chrome used ~1.5 GB during this run).
-- Ollama fallback: `backend/.env` points at `localhost:11435`, but after the restart Ollama.app runs on
-  the default `11434` — align one of them or the emergency fallback is unreachable (reported as
-  `ollama: unreachable` on the admin page).
+- Ollama fallback: aligned on the host Ollama.app default `localhost:11434` (config default, `.env`,
+  `.env.example`). A wrong port shows `ollama.healthy=false` on the admin page (tested).
+- Proctoring adds no model or recording: one camera+mic stream per session in the browser, released on
+  completion; spoken questions use the browser's built-in `speechSynthesis` (no server audio, no model).
+- Heavy suites were run one at a time under `scripts/memwatch.sh` (full backend suite min free 34 %;
+  Judge0 suite 62 %).

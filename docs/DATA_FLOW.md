@@ -62,3 +62,12 @@ no LLM call.
 (`app/services/career/gaps.py`), expands with prerequisite skills from `skill_relationships`, and
 asks the AI Gateway only for the explanatory summary/rationale text — persisted as a
 `LearningPath`/`LearningPathStep`.
+
+## Proctoring
+consent → preflight report (server recomputes pass/fail) → start (ACTIVE) → client events (debounced,
+batched, server-deduplicated) + heartbeats (server records gaps) → complete → reviewer timeline
+(company / enrolled institution / admin). Nothing derived from proctoring feeds scores, matching or ranking.
+
+## What the student receives
+Status, answered/coding status, bands, strengths and skills to develop; never the numeric evaluation
+(see [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md)).

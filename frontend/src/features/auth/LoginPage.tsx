@@ -1,3 +1,4 @@
+import { apiError } from "../../components/ui";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -24,7 +25,7 @@ export default function LoginPage() {
       setAuth(access_token, user_id, role, full_name);
       navigate(`/${role.toLowerCase().includes("student") ? "student" : role.toLowerCase().includes("institution") || role.toLowerCase().includes("faculty") || role.toLowerCase().includes("placement") || role.toLowerCase().includes("department") ? "institution" : role === "PLATFORM_ADMIN" ? "admin" : "company"}`);
     } catch (err: any) {
-      setError(err.response?.data?.detail ?? "Login failed");
+      setError(err.response ? apiError(err) : "Login failed");
     } finally {
       setLoading(false);
     }

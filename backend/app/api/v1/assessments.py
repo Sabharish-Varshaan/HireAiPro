@@ -142,15 +142,24 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
     application = await db.get(Application, payload.application_id)
     if profile is None or application is None or application.student_id != profile.id or application.job_id != assessment.job_id:
         raise HTTPException(403, "Not your application for this assessment")
+    from app.api.v1.proctoring import require_ready_session
+
+    session = await require_ready_session(db, application.id, "ASSESSMENT")
     existing = await db.scalar(select(AssessmentAttempt).where(
         AssessmentAttempt.assessment_id == assessment_id, AssessmentAttempt.application_id == application.id))
     if existing:
+        if session is not None and session.assessment_attempt_id is None:
+            session.assessment_attempt_id = existing.id
+            await db.commit()
         return _student_attempt(existing)
     attempt = AssessmentAttempt(assessment_id=assessment_id, application_id=application.id, student_id=profile.id,
                                 status=AssessmentAttemptStatus.IN_PROGRESS)
     db.add(attempt)
     if ApplicationStatus(application.status) == ApplicationStatus.APPLIED:
         await transition_application(db, application, ApplicationStatus.ASSESSMENT_PENDING, user.id, "assessment started")
+    await db.flush()
+    if session is not None:
+        session.assessment_attempt_id = attempt.id
     await db.commit()
     await db.refresh(attempt)
     return _student_attempt(attempt)

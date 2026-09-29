@@ -22,7 +22,7 @@ cd backend && .venv/bin/uvicorn app.main:app --port 8020
 cd backend && .venv/bin/celery -A app.workers.celery_app worker --pool=solo \
     -Q documents,assessments,matching,knowledge,reports,celery --loglevel=info
 cd frontend && npm run dev                              # http://localhost:5173 → proxies /api to :8020
-OLLAMA_HOST=127.0.0.1:11435 ollama serve                # only needed for fallback / Mode C
+ollama serve   # or Ollama.app; default http://localhost:11434 — only needed for fallback / Mode C
 ```
 Port 8020 because another local app occupies 8010 on this machine. Postgres is on 5435 and Valkey
 on 6380 to avoid clashing with other local instances.
@@ -46,7 +46,7 @@ No mode requires a paid provider. Status: Admin → AI usage, or `GET /api/v1/ad
   there is never a third copy. `--max-tasks-per-child` isn't available with the solo pool; restart
   the worker to release memory if needed.
 - Ollama: requests use `keep_alive: 2m`, so qwen3.5:4b leaves memory 2 minutes after its last
-  fallback call. Force-unload: `curl localhost:11435/api/generate -d '{"model":"qwen3.5:4b","keep_alive":0}'`.
+  fallback call. Force-unload: `curl localhost:11434/api/generate -d '{"model":"qwen3.5:4b","keep_alive":0}'`.
 - Local models (BGE-M3, reranker, Whisper) are **released after 5 idle minutes**
   (`MODEL_IDLE_UNLOAD_SECONDS`, 0 = keep resident). Measured on M4: API 5.4 GB with both models
   loaded → 1.3 GB after release; the next request reloads from the local cache in ~15 s.
@@ -89,3 +89,11 @@ and the two seed commands with the same `DATABASE_URL`.
   loop-bound; `app/workers/utils.py::run_async` disposes the pool per task.
 - **Slow Ollama**: Qwen3 "thinks" by default; the gateway sends `think:false`. Run Ollama natively
   (Docker Desktop's Ollama is CPU-only).
+
+## Tests use their own queues
+`backend/tests/conftest.py` points Celery at Valkey **db 10** (`TEST_VALKEY_URL`), refuses to run if it
+equals the dev `VALKEY_URL`, and flushes db 10 at start. A running dev worker never receives test jobs.
+
+## Proctoring locally
+Proctoring is enforced by default (`PROCTOR_ENFORCE=true`). Use a regular Chrome/Safari window: the
+system check needs camera, microphone and fullscreen permission. See [PROCTORING.md](PROCTORING.md).

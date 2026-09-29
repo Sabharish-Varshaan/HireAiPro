@@ -1,3 +1,4 @@
+import { apiError } from "../../components/ui";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -35,7 +36,7 @@ export default function SignupPage() {
       else if (r === "INSTITUTION_ADMIN") navigate("/institution");
       else navigate("/company");
     } catch (err: any) {
-      setError(err.response?.data?.detail ?? "Signup failed");
+      setError(err.response ? apiError(err) : "Signup failed");
     } finally {
       setLoading(false);
     }

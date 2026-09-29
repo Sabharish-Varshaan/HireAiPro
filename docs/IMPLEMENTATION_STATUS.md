@@ -1,23 +1,23 @@
 # Implementation Status
 
-Verified state as of the router / cost-control pass (2026-09-28). Every item marked DONE was
+Verified state as of the privacy / proctoring / voice pass (2026-09-29). Every item marked DONE was
 executed, not just coded; the evidence is noted beside it.
 
-## Test totals (last full run)
+## Test totals (last full run, 2026-09-29, sequential under memwatch)
 | Suite | Passed | Failed | Skipped* |
 |---|---|---|---|
-| unit (`tests/unit`) | 74 | 0 | 0 |
-| integration (`tests/integration`) | 12 | 0 | 1 |
-| security (`tests/security`) | 11 | 0 | 1 |
-| agents (`tests/agents`) | 6 | 0 | 2 |
-| **deterministic total** | **103** | **0** | — |
-| live-model (`-m live`) | 4 | 0 | — |
+| unit (`tests/unit`) | 94 | 0 | 0 |
+| integration (`tests/integration`) | 34 | 0 | 12 |
+| security (`tests/security`) | 17 | 0 | 1 |
+| agents (`tests/agents`) | 12 | 0 | 2 |
+| **full default run** | **157** | **0** | 15 |
+| Judge0 (`-m judge0`) | 11 | 0 | — |
+| live providers (`-m live`) | 4 | 0 | — |
 
-*Skipped = the live tests when running without `-m live`. Baseline before this pass: 86
-deterministic. Added: 15 router/governor tests, 1 agent request-limit test, 1 admin self-signup test.
-Frontend `tsc -b`: clean.
+*Skipped = marker-gated live/Judge0 tests in the default run. Frontend `tsc -b` + `vite build`: clean.
 
-Fresh E2E (`scripts/e2e_full_scenario.py`): **26/26 steps**, three separate runs.
+Browser E2E of proctoring and voice: see [PROCTORING.md](PROCTORING.md) (AUTOMATED DEVICE SIMULATION;
+real-device run NOT TESTED).
 
 ## Status by area
 | Area | Status | Evidence |
@@ -35,11 +35,15 @@ Fresh E2E (`scripts/e2e_full_scenario.py`): **26/26 steps**, three separate runs
 | Notifications, privacy controls | DONE | pipeline + privacy tests, E2E |
 | Institution + admin portals | DONE (API verified; UI type-checked, AI-usage panel added) | E2E institution/admin steps |
 | **Task router + cost governor** | DONE | test_router A–J, live Luna/Groq/Ollama checks |
-| Judge0 execution | **BLOCKED on this Mac** (cgroup v2); labelled local fallback | E2E shows `execution_backend=local_fallback` |
+| Judge0 execution (Python, Node, C++) | DONE (cgroup-v2 build, fails closed) | `-m judge0` 11/11 |
+| Student score privacy | DONE | [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md) |
+| Proctoring + reviewer timeline | DONE (simulated devices) | [PROCTORING.md](PROCTORING.md) |
+| Spoken interview questions | DONE | browser E2E: Replay +0 ai_runs |
 
 ## Known limitations
-- Judge0 can't sandbox on Docker Desktop (macOS); works on a cgroup-v1 Linux host. The local
-  fallback runs real Python but without sandbox isolation.
+- Proctoring has not been exercised with a real camera/microphone (the automation browser blocks
+  them); `speechSynthesis` voice availability varies by OS/browser.
+- Sessions abandoned before consent (created by the earlier double-mount bug) stay as CREATED rows.
 - Groq's free tier rate-limits (429/413) under repeated test runs; the router then uses Luna (cost
   still < $0.01 per full E2E).
 - Agent orchestration isn't 100% deterministic: in the final E2E 5/6 agent runs completed via the

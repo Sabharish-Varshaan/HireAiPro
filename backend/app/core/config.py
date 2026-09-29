@@ -66,6 +66,15 @@ class Settings(BaseSettings):
 
     JUDGE0_URL: str = "http://localhost:2358"
     JUDGE0_POLL_TIMEOUT_SECONDS: int = 30
+    # Proctoring policy (docs/PROCTORING.md). Events are recorded for human review; a
+    # single fullscreen exit or network drop never terminates or invalidates an attempt.
+    PROCTOR_ENFORCE: bool = True  # attempts/interviews start only after consent + passed system check
+    PROCTOR_FULLSCREEN_REQUIRED: bool = True
+    PROCTOR_CAMERA_REQUIRED: bool = True
+    PROCTOR_MICROPHONE_REQUIRED: bool = True
+    PROCTOR_HEARTBEAT_SECONDS: int = 7
+    PROCTOR_HEARTBEAT_LOST_AFTER_SECONDS: int = 25
+    PROCTOR_DEDUPE_WINDOW_MS: int = 1500
     # Assessment generation: initial candidate + (N-1) replacements per uncovered slot.
     ASSESSMENT_SLOT_GENERATION_ATTEMPTS: int = 3
     # Unsandboxed local execution of student code is OFF unless BOTH are set; any other

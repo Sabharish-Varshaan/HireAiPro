@@ -9,6 +9,9 @@ from app.api.deps import require_roles
 from app.api.tenancy import member_institution_ids
 from app.core.database import get_db
 from app.models.enums import UserRole
+from app.models.applications import Application
+from app.models.jobs import Job
+from app.models.organizations import Organization
 from app.models.institutions import Cohort, Department, Institution, InstitutionMember
 from app.models.students import StudentProfile
 from app.models.users import User
@@ -124,6 +127,25 @@ async def roster(institution_id: uuid.UUID, department_id: uuid.UUID | None = No
                  user: User = Depends(require_roles(*STAFF, UserRole.PLATFORM_ADMIN)), db: AsyncSession = Depends(get_db)):
     await _member(db, user, institution_id)
     return await ia.roster(db, institution_id, department_id, cohort_id)
+
+
+@router.get("/{institution_id}/students/{student_id}/applications")
+async def student_applications(institution_id: uuid.UUID, student_id: uuid.UUID,
+                               user: User = Depends(require_roles(*STAFF, UserRole.PLATFORM_ADMIN)),
+                               db: AsyncSession = Depends(get_db)):
+    """Applications of ONE enrolled student, so staff can open the per-application
+    evaluation and proctoring record (docs/SCORE_VISIBILITY.md)."""
+    await _member(db, user, institution_id)
+    profile = await db.get(StudentProfile, student_id)
+    if profile is None or profile.institution_id != institution_id:
+        raise HTTPException(404, "Student not enrolled at this institution")
+    owner = await db.get(User, profile.user_id)
+    rows = (await db.execute(select(Application, Job, Organization).join(Job, Job.id == Application.job_id)
+                             .join(Organization, Organization.id == Job.organization_id)
+                             .where(Application.student_id == student_id).order_by(Application.created_at.desc()))).all()
+    return {"student_id": student_id, "name": owner.full_name if owner else None,
+            "applications": [{"id": a.id, "job_title": j.title, "organization_name": o.name, "status": a.status,
+                              "applied_at": a.created_at} for a, j, o in rows]}
 
 
 @router.get("/{institution_id}/analytics")

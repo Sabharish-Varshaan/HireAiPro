@@ -6,6 +6,9 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://hireai:hireai@localh
 os.environ.setdefault("QDRANT_COLLECTION_PREFIX", "test_")
 # Celery broker + result backend in their own Valkey database: a dev worker
 # (db 0) can never consume a task enqueued by a test, and vice versa.
+# Most tests exercise scoring/matching directly; proctoring gating has its own tests
+# (tests/integration/test_proctoring.py) which enable it explicitly.
+os.environ.setdefault("PROCTOR_ENFORCE", "false")
 os.environ["VALKEY_URL"] = os.environ.get("TEST_VALKEY_URL", "redis://localhost:6380/10")
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 

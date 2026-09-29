@@ -74,14 +74,23 @@ async def start_interview(payload: StartInterviewRequest, user: User = Depends(r
     application = await db.get(Application, payload.application_id)
     if me is None or application is None or application.student_id != me.id:
         raise HTTPException(404, "Application not found")
+    from app.api.v1.proctoring import require_ready_session
+
+    session = await require_ready_session(db, application.id, "INTERVIEW")
     existing = await db.scalar(select(Interview).where(Interview.application_id == application.id))
     if existing:
+        if session is not None and session.interview_id is None:
+            session.interview_id = existing.id
+            await db.commit()
         return existing
     if ApplicationStatus(application.status) != ApplicationStatus.ASSESSMENT_COMPLETED:
         raise HTTPException(409, "Finish the assessment before starting the interview")
     interview = Interview(application_id=application.id, student_id=me.id, job_id=application.job_id,
                           max_turns=settings.INTERVIEW_MAX_TURNS)
     db.add(interview)
+    await db.flush()
+    if session is not None:
+        session.interview_id = interview.id
     await transition_application(db, application, ApplicationStatus.INTERVIEW_PENDING, user.id, "interview started")
     await db.commit()
     await db.refresh(interview)

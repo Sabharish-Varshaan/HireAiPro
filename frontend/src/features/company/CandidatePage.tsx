@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { ProctoringPanel } from "../proctoring/ProctoringPanel";
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Table, inputCls, pct } from "../../components/ui";
 
 export function MatchExplanation({ match }: { match: any }) {
@@ -167,6 +168,8 @@ export default function CandidatePage() {
           </>
         )}
       </Card>
+
+      <Card title="Proctoring (objective events)"><ProctoringPanel applicationId={applicationId!} /></Card>
 
       <Card title="Interview" actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}>
         {!interview.data ? <Empty>Not started.</Empty> : (turns.data ?? []).map((t: any) => (

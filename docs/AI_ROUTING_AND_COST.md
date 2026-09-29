@@ -105,3 +105,9 @@ Groq and OpenAI receive the prompt/context of the tasks routed to them (e.g. JD 
 answers being graded, retrieved chunks). Tenant filtering happens **before** context is assembled,
 so another tenant's content can't be included. Secrets, DB credentials and unrelated documents are
 never part of prompts. For sensitive demos run `LOCAL_ONLY=true`.
+
+## Ollama endpoint (2026-09-29)
+The fallback runs on the host Ollama.app at `http://localhost:11434` (qwen3.5:4b). The previous `11435`
+had no listener, so the emergency fallback was silently unreachable. Verified: with Luna and Groq pointed
+at a dead port, `scripts/fallback_probe.py` was served by ollama (cold 37 s) and the model unloaded after.
+Spoken interview questions add **no** cost (browser speech).

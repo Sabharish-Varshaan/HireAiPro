@@ -4,6 +4,7 @@ import { api } from "../../api/client";
 import { Badge, Button, Card, Empty, ErrorBox, Loading } from "../../components/ui";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
+import { ProctoredGate } from "../proctoring/ProctoredGate";
 
 export default function ApplicationDetailPage() {
   const { applicationId } = useParams();
@@ -15,6 +16,10 @@ export default function ApplicationDetailPage() {
     queryFn: () => api.get(`/assessments/by-job/${a.job_id}`).then((r) => r.data) });
   const interview = useQuery({ queryKey: ["interview", applicationId], queryFn: () => api.get(`/interviews/by-application/${applicationId}`).then((r) => r.data) });
   const match = useQuery({ queryKey: ["match", applicationId], retry: false, queryFn: () => api.get(`/matching/applications/${applicationId}`).then((r) => r.data) });
+  const attemptQ = useQuery({ queryKey: ["attempt-by-app", applicationId],
+    queryFn: () => api.get(`/assessments/attempts/by-application/${applicationId}`).then((r) => r.data) });
+  const assessmentDone = ["SUBMITTED", "SCORED"].includes(attemptQ.data?.attempt?.status);
+  const interviewDone = interview.data?.status === "COMPLETED";
   const refreshAll = () => ["application", "history", "interview", "match", "attempt-by-app"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const startInterview = useMutation({ mutationFn: () => api.post("/interviews/start", { application_id: applicationId }), onSuccess: refreshAll });
 
@@ -40,15 +45,22 @@ export default function ApplicationDetailPage() {
 
       <Card title="Assessment">
         {!assessment.data ? <Empty>No published assessment for this job.</Empty> :
-          <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!} onSubmitted={refreshAll} />}
+          assessmentDone ? <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!} onSubmitted={refreshAll} /> :
+          <ProctoredGate applicationId={applicationId!} kind="ASSESSMENT">
+            {(complete) => <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!}
+              onSubmitted={() => { void complete(); refreshAll(); }} />}
+          </ProctoredGate>}
       </Card>
 
       <Card title="Interview" actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}>
         {!interviewAllowed && <Empty>Available after you submit the assessment.</Empty>}
-        {interviewAllowed && !interview.data && (
-          <Button onClick={() => startInterview.mutate()} disabled={startInterview.isPending}>Start interview</Button>
-        )}
-        {interview.data && <InterviewRunner interviewId={interview.data.id} />}
+        {interviewAllowed && (interviewDone ? <p className="text-sm font-medium">Interview completed</p> : (
+          <ProctoredGate applicationId={applicationId!} kind="INTERVIEW">
+            {(complete, stream) => !interview.data ? (
+              <Button onClick={() => startInterview.mutate()} disabled={startInterview.isPending}>Start interview</Button>
+            ) : <InterviewRunner interviewId={interview.data.id} mediaStream={stream} onCompleted={() => void complete()} />}
+          </ProctoredGate>
+        ))}
         <ErrorBox error={startInterview.error} />
       </Card>
 

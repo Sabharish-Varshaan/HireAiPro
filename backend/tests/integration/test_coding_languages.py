@@ -77,18 +77,20 @@ async def test_three_languages_through_endpoint_and_judge0(client, lang):
     wrong = await client.post("/coding/submit", headers=hs, json={"assessment_answer_id": answer_id, "question_id": str(q.id),
                                                                  "language": lang, "source_code": WRONG[lang]})
     assert wrong.status_code == 200, wrong.text
-    assert wrong.json()["passed_count"] == 2 and wrong.json()["total_count"] == 3  # [1,2,3] and [10,-4] sum to 6; [0] does not
+    assert wrong.json()["result"] == "SOME_TESTS_FAILED" and "passed_count" not in wrong.json()  # students see status only
+    async with AsyncSessionLocal() as db:  # [1,2,3] and [10,-4] sum to 6; [0] does not
+        w = await db.get(CodingSubmission, wrong.json()["submission_id"])
+        assert (w.passed_count, w.total_count) == (2, 3)
 
     ok = await client.post("/coding/submit", headers=hs, json={"assessment_answer_id": answer_id, "question_id": str(q.id),
                                                               "language": lang, "source_code": SOLUTIONS[lang]})
     body = ok.json()
-    assert ok.status_code == 200 and body["passed_count"] == 3, body
+    assert ok.status_code == 200 and body["result"] == "ALL_TESTS_PASSED", body
     assert body["execution_backend"] == "judge0" and body["language"] == lang
-    assert body["judge0_language_id"] in live.values()
-    assert all(t["execution_backend"] == "judge0" for t in body["tests"])
     async with AsyncSessionLocal() as db:
         sub = await db.get(CodingSubmission, body["submission_id"])
-        assert (sub.language, sub.judge0_language_id, sub.execution_backend, sub.passed_count) == (lang, body["judge0_language_id"], "judge0", 3)
+        assert sub.judge0_language_id in live.values()
+        assert (sub.language, sub.execution_backend, sub.passed_count) == (lang, "judge0", 3)
         ev = await db.scalar(select(SkillEvidence).where(SkillEvidence.student_id == st.id, SkillEvidence.source_type == "CODING"))
         assert ev.source_id == sub.id and ev.normalized_score == 1.0 and ev.raw_score == 3.0  # from Judge0 pass counts only
 

@@ -56,6 +56,12 @@ cd backend
 .venv/bin/python scripts/e2e_full_scenario.py   # fresh E2E + provider/cost report
 ```
 
+## Proctoring, privacy and voice
+Assessments and interviews run behind a consented system check and objective proctoring (events only,
+no recording, no cheating score) — [docs/PROCTORING.md](docs/PROCTORING.md). Students never receive
+numeric evaluations — [docs/SCORE_VISIBILITY.md](docs/SCORE_VISIBILITY.md). Interview questions are read
+aloud by the browser with Replay/Mute.
+
 ## Docs
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design

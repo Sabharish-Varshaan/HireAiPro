@@ -64,7 +64,7 @@ column is updated as each gap closes.
 ## Pass 3 — router, cost control, RAM (2026-09-28)
 | Requirement | Status | Evidence |
 |---|---|---|
-| `.env` audited without printing secrets | DONE | keys reported configured/missing only; duplicate `LLM_PROVIDER` removed; Ollama URL corrected to native 11435 |
+| `.env` audited without printing secrets | DONE | keys reported configured/missing only; duplicate `LLM_PROVIDER` removed; Ollama URL later aligned to the host Ollama.app port 11434 (pass 4) |
 | Model ids verified against providers | DONE | Groq `/models` lists `openai/gpt-oss-120b`; OpenAI `/v1/models/{id}` 200 for gpt-6-luna/sol and gpt-5.6-luna/sol; user chose gpt-6-* (half price) |
 | Task-aware router | DONE | `providers.TASK_POLICY`, test_router B, C, H |
 | Budget governor (soft/hard/reserve) | DONE | test_router F, G, G2; admin endpoint |
@@ -75,3 +75,17 @@ column is updated as each gap closes.
 | RAM reduction | DONE | Judge0 off by default (−2.3 GB), BGE fp16 (5.34 → 2.32 GB), no resident generative model |
 | MLX experiment | REMOVED per instruction | venv + model files deleted |
 | Admin self-registration hole | FIXED | signup refuses PLATFORM_ADMIN; `python -m app.cli create-admin` |
+
+## Pass 4: privacy, proctoring, voice (2026-09-29)
+| Item | Status | Evidence |
+|---|---|---|
+| Ollama config drift (11435 vs 11434) | DONE | defaults/.env/.env.example = 11434; live fallback probe served by ollama; `test_ollama_config.py` |
+| Test Celery/Valkey isolated from dev | DONE | db 10 + guard; `test_queue_isolation.py`; dev worker saw 0 test jobs during full run |
+| Bounded slot replacement (3 attempts, reasons fed back, rejected hashes) + coverage shown to recruiter | DONE | `test_slot_replacement.py`; coverage panel on job page |
+| Student score privacy at backend | DONE | student DTOs; `test_score_visibility.py`; browser payload scan clean |
+| Cross-company read of a shared student's evaluation | FIXED | `assert_can_view_application` |
+| Recruiter notes leaking to student history | FIXED | notes hidden for students |
+| System check, fullscreen/camera/mic/network/heartbeat proctoring, reviewer timeline | DONE | `test_proctoring.py`; E2E under AUTOMATED DEVICE SIMULATION |
+| Spoken interview questions (speechSynthesis, Replay, Mute) | DONE | browser E2E: autoplay once, Replay +0 ai_runs, Mute persisted, cancel on submit |
+| Real-device proctoring pass | NOT TESTED | in-app browser blocks camera/mic; run in Chrome |
+| Login page crashed on 422 validation errors | FIXED | found in E2E; now uses `apiError` |

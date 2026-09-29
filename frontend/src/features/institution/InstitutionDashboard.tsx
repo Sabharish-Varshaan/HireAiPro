@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api/client";
@@ -136,7 +137,7 @@ export default function InstitutionDashboard() {
         {(roster.data ?? []).length === 0 && !roster.isLoading && <Empty>No enrolled students{f.cohort_id || f.department_id ? " for this filter" : ""}.</Empty>}
         {(roster.data ?? []).length > 0 && (
           <Table head={["Name", "Email", "Department", "Cohort", "Verified skills", "Avg level", "Applications"]}>{roster.data.map((s: any) => (
-            <tr key={s.student_id}><td className="py-1 pr-3">{s.name}</td><td className="pr-3 text-xs">{s.email}</td><td className="pr-3">{s.department ?? "—"}</td>
+            <tr key={s.student_id}><td className="py-1 pr-3"><Link className="underline" to={`/institution/institutions/${inst.id}/students/${s.student_id}`}>{s.name}</Link></td><td className="pr-3 text-xs">{s.email}</td><td className="pr-3">{s.department ?? "—"}</td>
               <td className="pr-3">{s.cohort ?? "—"}</td><td className="pr-3">{s.verified_skills}</td><td className="pr-3">{pct(s.avg_level)}</td><td>{s.applications}</td></tr>))}</Table>)}
       </Card>
     </div>

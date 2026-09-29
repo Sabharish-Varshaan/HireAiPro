@@ -63,3 +63,11 @@ convention.
 ## Data flow at a glance
 
 See `docs/DATA_FLOW.md` for the JD → assessment → evidence → match pipeline in detail.
+
+## Proctoring and score visibility
+- `app/services/proctoring` + `app/api/v1/proctoring.py`: sessions, events, server-side heartbeat gap
+  detection, a 428 `PROCTORING_REQUIRED` gate on assessment/interview start. Frontend:
+  `features/proctoring` (consent → system check → fullscreen → monitoring). See [PROCTORING.md](PROCTORING.md).
+- Student responses are separate DTOs (`app/schemas/student_views.py`); reviewer access is resource-level
+  (`assert_can_view_application`). See [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md).
+- Interview questions are spoken by the browser (`speechSynthesis`); no server audio.

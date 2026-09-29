@@ -45,3 +45,10 @@ module, it's named so a reviewer can verify it directly.
 | Our bugs are not hidden by switching models | only transport/provider errors advance the chain (`test_j_*`) |
 | Agents can't loop forever | `UsageLimits(request_limit=6)` per run |
 | Remote prompts never include another tenant's content | tenant filter runs before context assembly (`docs/RAG_SECURITY.md`) |
+
+## Proctoring and voice
+- No AI judges proctoring events; there is no cheating score or accusation. Reviewers are people.
+- Spoken questions are the browser's `speechSynthesis` reading the already-generated text; Replay makes
+  no request and no LLM call (verified: `ai_runs` unchanged).
+- Assessment slot replacement: up to `ASSESSMENT_SLOT_GENERATION_ATTEMPTS` (3) per slot, each told why the
+  previous candidate was rejected; rejected fingerprints are refused; uncovered slots are reported, never faked.

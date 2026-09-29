@@ -33,3 +33,12 @@ speech-to-text are always local.
 ## Retention
 No automatic expiry yet: data persists until a user deletes it via the controls above. Uploaded
 files live under `backend/data/uploads/` (gitignored).
+
+## Proctoring data
+Stored: consent time, system-check results, and timestamped events (type, duration, source). Not stored:
+video, audio, screenshots, keystrokes, or any biometric. Camera/mic stay in the browser and are released on
+completion. Visible to the hiring company, the enrolled institution and admins; not to other companies.
+
+## Student view of evaluations
+Students receive qualitative results only; see [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md). The `/me/data`
+export contains bands, not levels or scores.
