@@ -98,30 +98,6 @@ async def add_cohort(institution_id: uuid.UUID, payload: CohortIn, user: User = 
     return {"id": c.id, "name": c.name}
 
 
-@router.post("/{institution_id}/students")
-async def enroll_student(institution_id: uuid.UUID, payload: EnrollIn, user: User = Depends(require_roles(*MANAGERS)),
-                         db: AsyncSession = Depends(get_db)):
-    await _member(db, user, institution_id)
-    student = await db.scalar(select(User).where(User.email == payload.student_email, User.role == UserRole.STUDENT))
-    if student is None:
-        raise HTTPException(404, "No student account with that email")
-    profile = await db.scalar(select(StudentProfile).where(StudentProfile.user_id == student.id))
-    if profile is None:
-        profile = StudentProfile(user_id=student.id)
-        db.add(profile)
-    if profile.institution_id and profile.institution_id != institution_id:
-        raise HTTPException(409, "Student is enrolled at another institution")
-    if payload.cohort_id:
-        cohort = await db.get(Cohort, payload.cohort_id)
-        if cohort is None or cohort.institution_id != institution_id:
-            raise HTTPException(422, "Cohort not in this institution")
-    profile.institution_id = institution_id
-    profile.cohort_id = payload.cohort_id
-    await audit(db, user, "student_enrolled", "student", profile.id, metadata={"institution_id": str(institution_id)})
-    await db.commit()
-    return {"student_id": profile.id}
-
-
 @router.get("/{institution_id}/roster")
 async def roster(institution_id: uuid.UUID, department_id: uuid.UUID | None = None, cohort_id: uuid.UUID | None = None,
                  user: User = Depends(require_roles(*STAFF, UserRole.PLATFORM_ADMIN)), db: AsyncSession = Depends(get_db)):

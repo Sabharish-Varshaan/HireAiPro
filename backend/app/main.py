@@ -20,6 +20,7 @@ from app.api.v1 import admin as admin_routes
 from app.api.v1 import knowledge as knowledge_routes
 from app.api.v1 import me as me_routes
 from app.api.v1 import dev as dev_routes
+from app.api.v1 import institution_students as institution_students_routes
 from app.api.v1 import proctoring as proctoring_routes
 
 app = FastAPI(title="HireAiPro API", version="0.1.0")
@@ -51,6 +52,7 @@ app.include_router(admin_routes.router, prefix="/api/v1")
 app.include_router(knowledge_routes.router, prefix="/api/v1")
 app.include_router(me_routes.router, prefix="/api/v1")
 app.include_router(dev_routes.router, prefix="/api/v1")
+app.include_router(institution_students_routes.router, prefix="/api/v1")
 app.include_router(proctoring_routes.router, prefix="/api/v1")
 
 

@@ -23,7 +23,7 @@ def uniq(prefix: str) -> str:
 
 
 async def make_user(db: AsyncSession, role: UserRole, name: str = "Test User") -> tuple[User, dict]:
-    u = User(email=f"{uniq('u')}@test.local", password_hash=hash_password("pw12345!"), full_name=name, role=role)
+    u = User(email=f"{uniq('u')}@example.com", password_hash=hash_password("pw12345!"), full_name=name, role=role)
     db.add(u)
     await db.flush()
     return u, {"Authorization": f"Bearer {create_access_token(u.id, role)}"}

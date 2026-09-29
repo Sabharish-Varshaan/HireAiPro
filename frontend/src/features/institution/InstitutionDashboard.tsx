@@ -1,53 +1,8 @@
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api/client";
 import { Button, Card, Empty, ErrorBox, Loading, Table, inputCls, pct } from "../../components/ui";
-
-function Setup() {
-  const qc = useQueryClient();
-  const [name, setName] = useState("");
-  const create = useMutation({ mutationFn: () => api.post("/institutions", { name }), onSuccess: () => qc.invalidateQueries({ queryKey: ["my-institutions"] }) });
-  return (
-    <Card title="Register your institution">
-      <div className="flex gap-2"><input className={inputCls} placeholder="Institution name" value={name} onChange={(e) => setName(e.target.value)} />
-        <Button onClick={() => create.mutate()} disabled={!name || create.isPending}>Create</Button></div>
-      <ErrorBox error={create.error} />
-    </Card>
-  );
-}
-
-function Structure({ inst, structure }: { inst: any; structure: any }) {
-  const qc = useQueryClient();
-  const [dep, setDep] = useState("");
-  const [cohort, setCohort] = useState({ name: "", department_id: "", graduation_year: "" });
-  const [enroll, setEnroll] = useState({ student_email: "", cohort_id: "" });
-  const inv = () => { qc.invalidateQueries({ queryKey: ["structure"] }); qc.invalidateQueries({ queryKey: ["roster"] }); qc.invalidateQueries({ queryKey: ["inst-analytics"] }); };
-  const addDep = useMutation({ mutationFn: () => api.post(`/institutions/${inst.id}/departments`, { name: dep }), onSuccess: () => { setDep(""); inv(); } });
-  const addCohort = useMutation({ mutationFn: () => api.post(`/institutions/${inst.id}/cohorts`, {
-    name: cohort.name, department_id: cohort.department_id || null, graduation_year: cohort.graduation_year ? Number(cohort.graduation_year) : null }),
-    onSuccess: () => { setCohort({ name: "", department_id: "", graduation_year: "" }); inv(); } });
-  const doEnroll = useMutation({ mutationFn: () => api.post(`/institutions/${inst.id}/students`, { student_email: enroll.student_email, cohort_id: enroll.cohort_id || null }),
-    onSuccess: () => { setEnroll({ student_email: "", cohort_id: "" }); inv(); } });
-  return (
-    <Card title="Departments, cohorts and enrollment">
-      <div className="flex gap-2"><input className={inputCls} placeholder="New department" value={dep} onChange={(e) => setDep(e.target.value)} />
-        <Button variant="secondary" onClick={() => addDep.mutate()} disabled={!dep}>Add department</Button></div>
-      <div className="flex gap-2">
-        <input className={inputCls} placeholder="New cohort" value={cohort.name} onChange={(e) => setCohort({ ...cohort, name: e.target.value })} />
-        <select className={inputCls} value={cohort.department_id} onChange={(e) => setCohort({ ...cohort, department_id: e.target.value })}>
-          <option value="">No department</option>{structure.departments.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
-        <input className={`${inputCls} w-28`} placeholder="Grad year" value={cohort.graduation_year} onChange={(e) => setCohort({ ...cohort, graduation_year: e.target.value })} />
-        <Button variant="secondary" onClick={() => addCohort.mutate()} disabled={!cohort.name}>Add cohort</Button></div>
-      <div className="flex gap-2">
-        <input className={inputCls} placeholder="Student account email" value={enroll.student_email} onChange={(e) => setEnroll({ ...enroll, student_email: e.target.value })} />
-        <select className={inputCls} value={enroll.cohort_id} onChange={(e) => setEnroll({ ...enroll, cohort_id: e.target.value })}>
-          <option value="">No cohort</option>{structure.cohorts.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-        <Button variant="secondary" onClick={() => doEnroll.mutate()} disabled={!enroll.student_email}>Enroll student</Button></div>
-      <ErrorBox error={addDep.error || addCohort.error || doEnroll.error} />
-    </Card>
-  );
-}
 
 export default function InstitutionDashboard() {
   const mine = useQuery({ queryKey: ["my-institutions"], queryFn: () => api.get("/institutions/mine").then((r) => r.data) });
@@ -60,7 +15,7 @@ export default function InstitutionDashboard() {
   const summary = useMutation({ mutationFn: () => api.post(`/institutions/${inst.id}/analytics/summary`, null, { params }).then((r) => r.data) });
 
   if (mine.isLoading) return <Loading />;
-  if (!inst) return <div className="max-w-2xl"><Setup /></div>;
+  if (!inst) return <Empty>No institution is linked to this account.</Empty>;
   const a = an.data;
   const cohorts = [...new Set((a?.heatmap ?? []).map((h: any) => h.cohort_name))] as string[];
   const heatSkills = [...new Set((a?.heatmap ?? []).map((h: any) => h.skill_name))] as string[];
@@ -77,7 +32,6 @@ export default function InstitutionDashboard() {
             <option value="">All cohorts</option>{(structure.data?.cohorts ?? []).map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
         </div>
       </div>
-      {structure.data && <Structure inst={inst} structure={structure.data} />}
       <ErrorBox error={an.error} onRetry={an.refetch} />
       {an.isLoading && <Loading label="Running analytics queries…" />}
       {a && (
