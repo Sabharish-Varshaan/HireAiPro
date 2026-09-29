@@ -44,3 +44,10 @@ def ingest_task(self, source_id: str, actor_user_id: str | None = None) -> dict:
         f"knowledge:{source_id}", "knowledge_ingestion", {"source_id": source_id}, self.request.id,
         lambda: ingest(uuid.UUID(source_id), actor_user_id=uuid.UUID(actor_user_id) if actor_user_id else None),
     ))
+
+
+@celery_app.task(name="knowledge.warm_models")
+def warm_models_task() -> dict:
+    from app.services.ai_gateway.embeddings import warm_models
+
+    return warm_models()

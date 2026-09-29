@@ -82,8 +82,29 @@ async def search_company_questions(
         )
         .order_by(Question.created_at)
     )
-    rows = [q for q in (await db.scalars(stmt)).all() if q.id not in (exclude or set())]
+    rows = [q for q in (await db.scalars(stmt)).all() if q.id not in (exclude or set())
+            and not (q.question_type == QuestionType.CODING and q.source_type == QuestionSourceType.AI_GENERATED
+                     and not _tests_verified(q))]
     return rows[:limit]
+
+
+def _tests_verified(q: Question) -> bool:
+    return bool(((q.validation_report or {}).get("checks") or {}).get("tests_verified_by_execution"))
+
+
+async def _reverify_coding(q: Question, job_id: uuid.UUID) -> None:
+    """Coding questions generated before execution verification existed are checked
+    now; a failure demotes them to DRAFT so no assessment uses their tests."""
+    from app.services.questions.coding_verification import verify_test_cases
+
+    ok, why = await verify_test_cases(q.question_text, q.test_cases or [], related_entity_id=job_id)
+    report = dict(q.validation_report or {})
+    report["checks"] = {**(report.get("checks") or {}), "tests_verified_by_execution": ok}
+    if not ok:
+        report["reasons"] = [*(report.get("reasons") or []), why]
+        q.status = QS.DRAFT
+    report["ok"] = ok and report.get("ok", True)
+    q.validation_report = report
 
 
 async def search_platform_questions(
@@ -99,7 +120,9 @@ async def search_platform_questions(
         )
         .order_by(Question.created_at)
     )
-    rows = [q for q in (await db.scalars(stmt)).all() if q.id not in (exclude or set())]
+    rows = [q for q in (await db.scalars(stmt)).all() if q.id not in (exclude or set())
+            and not (q.question_type == QuestionType.CODING and q.source_type == QuestionSourceType.AI_GENERATED
+                     and not _tests_verified(q))]
     return rows[:limit]
 
 
@@ -131,6 +154,8 @@ async def generate_missing_question(
     gkey = f"{job_id}:{skill_id}:{qtype.value}:{slot}"
     existing = await db.scalar(select(Question).where(Question.generation_key == gkey))
     if existing:
+        if qtype == QuestionType.CODING and not _tests_verified(existing):
+            await _reverify_coding(existing, job_id)
         return existing
 
     docs = retrieve_knowledge(skill_name, skill_id, organization_id, qtype)
@@ -154,13 +179,15 @@ async def generate_missing_question(
         fields = dict(expected_concepts=g.expected_concepts, rubric={"criteria": g.rubric_criteria, "version": "rubric_v1"})
     else:
         g = await gateway.generate_structured(
-            f"Write one {difficulty} coding problem testing '{skill_name}' solvable in Python. The program "
-            "reads ONE line of stdin containing a Python literal and prints the answer. starter_code must "
-            "include the stdin parsing and a solve() stub. Give 3 test_cases as "
+            f"Write one {difficulty} language-neutral coding problem testing '{skill_name}' that can be solved in "
+            "Python, JavaScript or C++. The program reads ONE line of stdin containing a JSON value (e.g. [1,2,3]) "
+            "and prints the answer. Do NOT include starter code or any part of a solution. Give 3 test_cases as "
             '{"input": "<exact stdin text>", "expected_output": "<exact stdout text>"}.',
             GeneratedCodingQuestion, **common,
         )
-        fields = dict(starter_code=g.starter_code, test_cases=g.test_cases)
+        # LLM-written starter code is never shipped: in QA it contained the complete
+        # solution (2026-09-29). Students get neutral per-language stdin templates.
+        fields = dict(starter_code=None, test_cases=g.test_cases)
 
     refs = select_refs(docs, getattr(g, "used_context", []) or []) if docs else []
     result = validate_structure(
@@ -172,6 +199,14 @@ async def generate_missing_question(
             result, g.question_text, skill_name, skill_id, TenantScope(organization_id=organization_id),
             context_texts=[d.text for d in docs] if docs else None,
         )
+    if result.ok and qtype == QuestionType.CODING:
+        from app.services.questions.coding_verification import verify_test_cases
+
+        verified, why = await verify_test_cases(g.question_text, fields["test_cases"], related_entity_id=job_id)
+        result.checks["tests_verified_by_execution"] = verified
+        if not verified:
+            result.reasons.append(why)
+        result.ok = all(result.checks.values())
 
     q = Question(
         question_text=g.question_text,

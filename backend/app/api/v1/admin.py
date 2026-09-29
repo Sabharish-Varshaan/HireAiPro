@@ -18,6 +18,7 @@ from app.models.questions import Question
 from app.models.skills import Skill, SkillAlias, SkillRelationship
 from app.models.users import User
 from app.services.audit import audit
+from app.services.skills.normalizer import _normalize_text
 from app.workers.jobs import upsert_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -25,7 +26,7 @@ ADMIN = require_roles(UserRole.PLATFORM_ADMIN)
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", s.lower())
+    return _normalize_text(s)
 
 
 class SkillIn(BaseModel):
@@ -72,6 +73,23 @@ async def list_users(user: User = Depends(ADMIN), db: AsyncSession = Depends(get
     rows = (await db.scalars(select(User).order_by(User.created_at.desc()))).all()
     return [{"id": u.id, "email": u.email, "role": u.role, "full_name": u.full_name, "is_active": u.is_active,
              "created_at": u.created_at} for u in rows]
+
+
+@router.post("/ops/warm-models")
+async def warm_models_endpoint(user: User = Depends(ADMIN)):
+    """Demo-day infrastructure warm-up of BGE-M3 + reranker in the API process and
+    the Celery worker (Whisper is not warmed). No business requests are made."""
+    import asyncio
+
+    from app.services.ai_gateway.embeddings import warm_models
+    from app.workers.tasks_knowledge import warm_models_task
+
+    api = await asyncio.to_thread(warm_models)
+    try:
+        worker = await asyncio.to_thread(warm_models_task.delay().get, timeout=180)
+    except Exception as exc:  # noqa: BLE001 — reported, not hidden
+        worker = {"error": f"{type(exc).__name__}: {exc}"}
+    return {"api": api, "worker": worker}
 
 
 class UserUpdate(BaseModel):

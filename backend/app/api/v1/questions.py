@@ -189,7 +189,20 @@ async def change_status(question_id: uuid.UUID, payload: TransitionRequest,
         await transition(db, user, q, payload.status, await member_org_ids(db, user), payload.reason)
     except GovernanceError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
+    affected = []
+    if QS(payload.status) == QS.REJECTED:
+        from app.services.evidence.service import retire_evidence_for_question
+
+        affected = await retire_evidence_for_question(db, q.id)
+        if affected:
+            await audit(db, user, "question_evidence_retired", "question", q.id, organization_id=q.organization_id,
+                        metadata={"students": len(affected)})
     await db.commit()
+    if affected:
+        from app.services.evidence.estimator import recalculate_all_skills_for_student
+
+        for student_id in affected:
+            await recalculate_all_skills_for_student(db, student_id, user.id, "question_rejected")
     index_question(q)
     return q
 

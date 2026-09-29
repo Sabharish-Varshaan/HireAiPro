@@ -225,8 +225,34 @@ async def validate_question(ctx: RunContext[AssessmentDeps], question_id: str) -
     return {"status": str(q.status), "report": q.validation_report} if q else {"error": "not found"}
 
 
+async def _drop_cross_skill_duplicates(d: AssessmentDeps) -> list[str]:
+    """Never place the same problem twice in one assessment, even when it was picked
+    under two different skills (e.g. a reworded coding task under both Data Structures
+    and Algorithms). Uses the validator's duplicate threshold; later picks lose."""
+    from app.services.ai_gateway.embeddings import embed
+    from app.services.questions.validator import DUPLICATE_THRESHOLD
+
+    order = [(w, t, qid) for w in d.work for t in (QuestionType.MCQ, QuestionType.TECHNICAL, QuestionType.CODING)
+             for qid in w.picked.get(t, [])]
+    if len(order) < 2:
+        return []
+    texts = [(await d.db.get(Question, qid)).question_text for _, _, qid in order]
+    vecs = embed(texts)
+    kept, dropped = [], []
+    for (w, t, qid), v in zip(order, vecs):
+        if any(sum(a * b for a, b in zip(v, k)) >= DUPLICATE_THRESHOLD for k in kept):
+            w.picked[t].remove(qid)
+            dropped.append(str(qid))
+        else:
+            kept.append(v)
+    if dropped:
+        d.log.record("drop_duplicate_questions", dropped=dropped)
+    return dropped
+
+
 async def _create(d: AssessmentDeps) -> AssessmentPlan:
     d.assessment = await gen.get_or_create_assessment(d.db, d.job.id, d.title, d.blueprint)
+    dropped = await _drop_cross_skill_duplicates(d)
     sections, covered, missing, total = [], [], [], 0
     for i, w in enumerate(d.work):
         ids = [qid for t in (QuestionType.MCQ, QuestionType.TECHNICAL, QuestionType.CODING) for qid in w.picked.get(t, [])]
@@ -246,7 +272,7 @@ async def _create(d: AssessmentDeps) -> AssessmentPlan:
         covered_skills=covered, missing_coverage=missing,
         estimated_duration_minutes=d.blueprint.estimated_duration_minutes,
     )
-    d.assessment.plan = plan.model_dump(mode="json")
+    d.assessment.plan = {**plan.model_dump(mode="json"), "dropped_duplicates": dropped}
     await d.db.flush()
     return plan
 

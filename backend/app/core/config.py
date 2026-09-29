@@ -65,7 +65,11 @@ class Settings(BaseSettings):
     INTERVIEW_MAX_TURNS: int = 5
 
     JUDGE0_URL: str = "http://localhost:2358"
-    JUDGE0_POLL_TIMEOUT_SECONDS: int = 30  # per test case; past it the run fails closed (never re-run unsandboxed)
+    JUDGE0_POLL_TIMEOUT_SECONDS: int = 30
+    # Unsandboxed local execution of student code is OFF unless BOTH are set; any other
+    # APP_ENV (demo, production) ignores the flag. Judge0 down -> EXECUTION_SERVICE_UNAVAILABLE.
+    APP_ENV: str = "development"
+    ALLOW_UNSANDBOXED_CODE_EXECUTION: bool = False  # per test case; past it the run fails closed (never re-run unsandboxed)
 
     SCORING_VERSION: str = "skill_scoring_v1"
     MATCHING_VERSION: str = "matching_v1"

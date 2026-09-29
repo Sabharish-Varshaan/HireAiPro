@@ -156,7 +156,7 @@ export default function CandidatePage() {
                   <td className="pr-3 max-w-xs">{x.question_text}</td>
                   <td className="pr-3 max-w-xs text-xs text-gray-600">
                     {x.question_type === "MCQ" ? `option ${x.selected_option_index ?? "—"} ${x.is_correct ? "✓" : "✗"}` :
-                      x.question_type === "CODING" ? (x.coding ? `${x.coding.passed}/${x.coding.total} tests · ${x.coding.backends.join(", ")}` : "not run") :
+                      x.question_type === "CODING" ? (x.coding ? `${x.coding.passed}/${x.coding.total} tests · ${x.coding.language ?? "?"} · ${x.coding.backends.join(", ")}` : "not run") :
                         (x.answer_text ?? "—")}
                   </td>
                   <td className="pr-3">{x.score == null ? "—" : x.score.toFixed(2)}</td>

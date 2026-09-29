@@ -288,3 +288,31 @@ async def test_agent_models_carry_a_bounded_request_timeout():
     model = kwargs["model"]
     models = getattr(model, "models", [model])
     assert models and all(0 < (m.settings or {}).get("timeout", 0) <= 300 for m in models)
+
+
+@pytest.mark.asyncio
+async def test_assembly_drops_the_same_problem_picked_under_two_skills(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.ai_gateway import embeddings as E
+
+    vec = {"dup A": [1.0, 0.0], "dup B": [0.97, 0.243], "other": [0.0, 1.0]}  # A·B = 0.97 >= 0.92
+    monkeypatch.setattr(E, "embed", lambda texts: [vec[t] for t in texts])
+    async with AsyncSessionLocal() as db:
+        org, _, _ = await make_company(db)
+        py = await skill(db, "Python")
+        qs = {}
+        for text in vec:
+            q = Question(question_text=text, question_type=QuestionType.CODING, skill_id=py.id, difficulty="easy",
+                         source_type=QuestionSourceType.COMPANY_PRIVATE, organization_id=org.id,
+                         visibility=Visibility.COMPANY_PRIVATE, status=QuestionStatus.VALIDATED)
+            db.add(q)
+            qs[text] = q
+        await db.flush()
+        ds = SimpleNamespace(picked={QuestionType.CODING: [qs["dup A"].id, qs["other"].id]})
+        algo = SimpleNamespace(picked={QuestionType.CODING: [qs["dup B"].id]})
+        deps = SimpleNamespace(db=db, work=[ds, algo], log=SimpleNamespace(record=lambda *a, **k: None))
+        dropped = await AA._drop_cross_skill_duplicates(deps)
+        await db.rollback()
+    assert dropped == [str(qs["dup B"].id)]
+    assert algo.picked[QuestionType.CODING] == [] and ds.picked[QuestionType.CODING] == [qs["dup A"].id, qs["other"].id]

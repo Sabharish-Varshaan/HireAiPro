@@ -8,35 +8,16 @@ from pathlib import Path
 import httpx
 
 from app.core.config import get_settings
+from app.services.coding.languages import LanguageUnavailable, judge0_id_for
 
 settings = get_settings()
 
-LANGUAGE_IDS = {
-    "python": 71,
-    "javascript": 63,
-    "java": 62,
-    "cpp": 54,
-    "c": 50,
-    "go": 60,
-}
 
-# The stock judge0/judge0:1.13.1 image's `isolate` (1.8.x) only supports the cgroup v1
-# hierarchy. Docker Desktop on Apple Silicon (and any host that only mounts
-# cgroup v2 unified) makes every submission fail with a sandbox-level
-# "Internal Error" ("Failed to create control group ... No such file or
-# directory") before the student's code ever runs — this is an execution
-# environment problem, not a code-correctness one. When that specific
-# failure mode is detected, we fall back to running Python directly in a
-# subprocess with a wall-clock timeout so the grading pipeline still
-# executes *real* code and produces a *real* pass/fail, rather than
-# reporting every submission as failed. This fallback never runs for
-# non-Python languages and is not a substitute for Judge0's proper sandbox
-# isolation (no memory/network restriction) — it exists only so local dev
-# on an incompatible host isn't blocked. Production/CI hosts, which
-# typically run cgroup v1 or hybrid, should hit real Judge0 execution and
-# never trigger it. The repo's own build (infra/judge0, docs/JUDGE0_CGROUP_V2.md)
-# uses isolate v2 and sandboxes on cgroup v2, so this path is now only reached
-# when Judge0 is not running at all.
+# Student code runs only inside Judge0 (infra/judge0: isolate v2 on cgroup v2).
+# If Judge0 is down, times out, or lacks the language, run() raises
+# ExecutionUnavailable -> HTTP 503 EXECUTION_SERVICE_UNAVAILABLE; nothing is
+# scored. _run_local_python_fallback (Python only, NO isolation) remains solely
+# as a developer opt-in: APP_ENV=development AND ALLOW_UNSANDBOXED_CODE_EXECUTION=true.
 JUDGE0_SANDBOX_ERROR_MARKERS = ("Internal Error", "Failed to create control group")
 
 
@@ -49,6 +30,20 @@ def _is_legacy_cgroup_v1_failure(result: dict) -> bool:
     return desc == "Internal Error" and ("control group" in message or "cgroup" in message)
 
 
+class ExecutionUnavailable(Exception):
+    """EXECUTION_SERVICE_UNAVAILABLE: Judge0 cannot run the code right now; retryable.
+    Nothing is scored and no evidence is written."""
+
+
+class _PollTimeout(Exception):
+    pass
+
+
+def unsandboxed_execution_allowed() -> bool:
+    """Both switches, and never outside development."""
+    return settings.APP_ENV == "development" and settings.ALLOW_UNSANDBOXED_CODE_EXECUTION
+
+
 def _b64(text: str) -> str:
     return base64.b64encode(text.encode()).decode()
 
@@ -58,20 +53,23 @@ class Judge0Client:
         self.base_url = settings.JUDGE0_URL
 
     async def run(self, source_code: str, language: str, stdin: str = "", expected_output: str | None = None) -> dict:
-        language_id = LANGUAGE_IDS.get(language, LANGUAGE_IDS["python"])
+        """Sandboxed execution in Judge0, or ExecutionUnavailable. Never runs student
+        code on the host unless unsandboxed_execution_allowed() (dev opt-in only)."""
         try:
+            language_id = await judge0_id_for(language)
             result = await self._judge0(source_code, language_id, stdin, expected_output)
-        except httpx.ConnectError as exc:
-            # Only an unreachable Judge0 (not running locally) may use the dev fallback.
-            # Anything that reached Judge0 fails closed: a slow or hostile submission
-            # must never be re-run outside the sandbox.
-            if language != "python":
-                raise
-            return await _run_local_python_fallback(source_code, stdin, expected_output, f"Judge0 unreachable ({type(exc).__name__})")
-        if language == "python" and _is_legacy_cgroup_v1_failure(result):
-            return await _run_local_python_fallback(source_code, stdin, expected_output, "Judge0 sandbox error (cgroup v2 host)")
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, LanguageUnavailable, _PollTimeout) as exc:
+            return await self._unavailable(source_code, language, stdin, expected_output, f"{type(exc).__name__}: {exc}"[:200])
+        if _is_legacy_cgroup_v1_failure(result):
+            return await self._unavailable(source_code, language, stdin, expected_output, "Judge0 sandbox error (cgroup v1 image on cgroup v2 host)")
         result["execution_backend"] = "judge0"
+        result["judge0_language_id"] = language_id
         return result
+
+    async def _unavailable(self, source_code, language, stdin, expected_output, why: str) -> dict:
+        if language == "python" and unsandboxed_execution_allowed():
+            return await _run_local_python_fallback(source_code, stdin, expected_output, why)
+        raise ExecutionUnavailable(why)
 
     async def _judge0(self, source_code, language_id, stdin, expected_output) -> dict:
         """Submit, then poll by token. Judge0 1.13's wait=true re-reads the status
@@ -87,17 +85,13 @@ class Judge0Client:
             token = resp.json()["token"]
             deadline = time.monotonic() + settings.JUDGE0_POLL_TIMEOUT_SECONDS
             while True:
-                try:
-                    r = await client.get(f"{self.base_url}/submissions/{token}", params={"base64_encoded": "true"})
-                    r.raise_for_status()
-                    result = r.json()
-                    if (result.get("status") or {}).get("id", 0) > 2:  # 1 In Queue, 2 Processing
-                        break
-                except httpx.HTTPError:
-                    pass  # transient poll failure; the deadline below still bounds the wait
+                r = await client.get(f"{self.base_url}/submissions/{token}", params={"base64_encoded": "true"})
+                r.raise_for_status()
+                result = r.json()
+                if (result.get("status") or {}).get("id", 0) > 2:  # 1 In Queue, 2 Processing
+                    break
                 if time.monotonic() > deadline:
-                    return {"token": token, "status": {"id": 13, "description": "Judge0 did not finish in time"},
-                            "stdout": None, "stderr": None, "compile_output": None, "time": None, "memory": None}
+                    raise _PollTimeout(f"Judge0 did not finish submission {token} in {settings.JUDGE0_POLL_TIMEOUT_SECONDS}s")
                 await asyncio.sleep(0.5)
         for field in ("stdout", "stderr", "compile_output", "message"):
             if result.get(field):

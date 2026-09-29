@@ -80,3 +80,17 @@ async def test_no_alias_shadows_another_canonical_name(db):
     canon = {re.sub(r"[^a-z0-9]+", "", s.canonical_name.lower()): s.id for s in (await db.scalars(select(Skill))).all()}
     for a in (await db.scalars(select(SkillAlias))).all():
         assert canon.get(a.alias_normalized, a.skill_id) == a.skill_id, a.alias
+
+
+@pytest.mark.asyncio
+async def test_c_family_does_not_collide():
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionLocal
+    from app.models.skills import Skill
+    from app.services.skills.normalizer import normalize_skill_name
+
+    async with AsyncSessionLocal() as db:
+        names = {s.id: s.canonical_name for s in (await db.scalars(select(Skill).where(Skill.canonical_name.in_(["C", "C++", "C#"])))).all()}
+        got = {raw: names.get((await normalize_skill_name(db, raw))[0]) for raw in ("C++", "c++", "cpp", "C#", "c#", "C")}
+    assert got == {"C++": "C++", "c++": "C++", "cpp": "C++", "C#": "C#", "c#": "C#", "C": "C"}

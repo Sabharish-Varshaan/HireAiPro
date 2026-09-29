@@ -13,6 +13,9 @@ class CodingSubmitRequest(BaseModel):
 class CodingResultOut(BaseModel):
     submission_id: uuid.UUID
     status: str
+    language: str
+    judge0_language_id: int | None = None
+    execution_backend: str | None = None
     passed_count: int
     total_count: int
     score: float | None

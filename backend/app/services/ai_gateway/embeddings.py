@@ -176,3 +176,15 @@ def get_reranker_service() -> RerankerService:
 
 def embed(texts: list[str]) -> list[list[float]]:
     return get_embedding_service().embed(texts)
+
+
+def warm_models() -> dict:
+    """Infrastructure warm-up for demos: one tiny embedding and one tiny rerank in
+    *this* process (models are per-process). No business data is read or written;
+    idle release still applies afterwards."""
+    t0 = time.monotonic()
+    embed(["warm-up"])
+    t1 = time.monotonic()
+    get_reranker_service().rerank("warm-up", [RetrievedDocument(id="w", text="warm-up", score=0.0)], top_n=1)
+    return {"embedder_s": round(t1 - t0, 2), "reranker_s": round(time.monotonic() - t1, 2),
+            "idle_unload_seconds": settings.MODEL_IDLE_UNLOAD_SECONDS}

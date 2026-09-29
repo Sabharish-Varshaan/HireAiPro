@@ -19,6 +19,7 @@ lists, test_cases as a list).
 import csv
 import io
 import json
+from typing import Literal
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ class ImportRow(BaseModel):
     expected_concepts: list[str] | None = None
     test_cases: list[dict] | None = None
     rubric: dict | None = None
+    allowed_languages: list[Literal["python", "javascript", "cpp"]] | None = None  # None = all
 
 
 @dataclass
@@ -170,6 +172,7 @@ async def import_rows(
             question_text=row.question_text.strip(), question_type=row.question_type, skill_id=skill_id,
             difficulty=difficulty, options=row.options, correct_option_index=row.correct_option,
             expected_concepts=expected, rubric=rubric, test_cases=row.test_cases,
+            allowed_languages=row.allowed_languages,
             source_type=QuestionSourceType.PLATFORM if platform else QuestionSourceType.COMPANY_PRIVATE,
             organization_id=None if platform else organization_id,
             visibility=Visibility.PLATFORM_PUBLIC if platform else Visibility.COMPANY_PRIVATE,

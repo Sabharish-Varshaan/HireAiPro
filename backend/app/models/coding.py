@@ -15,7 +15,9 @@ class CodingSubmission(Base, UUIDPk, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("assessment_answers.id"), index=True
     )
     question_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("questions.id"))
-    language: Mapped[str] = mapped_column(String)
+    language: Mapped[str] = mapped_column(String)  # stable id: python | javascript | cpp
+    judge0_language_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_backend: Mapped[str | None] = mapped_column(String, nullable=True)  # judge0 | local_fallback
     source_code: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default="PENDING")
     passed_count: Mapped[int] = mapped_column(Integer, default=0)

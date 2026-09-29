@@ -17,7 +17,11 @@ from app.models.skills import Skill, SkillAlias
 
 
 def _normalize_text(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", name.lower())
+    """Case/punctuation-insensitive key that keeps the meaning of '+' and '#':
+    "C++" -> "cpp", "C#" -> "csharp", "C" -> "c". Stripping them made all three
+    collide on "c", so a resume's "C++" resolved to C# (found 2026-09-29)."""
+    n = name.lower().replace("++", "pp").replace("+", "plus").replace("#", "sharp")
+    return re.sub(r"[^a-z0-9]+", "", n)
 
 
 async def _load_index(db: AsyncSession) -> tuple[dict[str, uuid.UUID], dict[str, str]]:

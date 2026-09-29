@@ -6,7 +6,7 @@
 # natively (arm64/amd64), instead of the full 30-language toolchain image.
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential git pkg-config ca-certificates curl xz-utils cron sudo libpq-dev procps \
+      build-essential g++ git pkg-config ca-certificates curl xz-utils cron sudo libpq-dev procps \
       libcap-dev libseccomp-dev libsystemd-dev \
       zlib1g-dev libssl-dev libffi-dev libbz2-dev libreadline-dev libsqlite3-dev liblzma-dev \
  && rm -rf /var/lib/apt/lists/*
@@ -54,9 +54,24 @@ ARG JUDGE0_SHA=6cf7851c7b161d6dae0213e26e79d6fdcce7453d
 RUN git clone https://github.com/judge0/judge0.git /api && cd /api  && git fetch -q origin pull/599/head && git checkout -q "${JUDGE0_SHA}"  && test "$(git rev-parse HEAD)" = "${JUDGE0_SHA}" && rm -rf .git \
  && rm judge0.conf  # sample config; sourced with allexport it would override the container env (hosts, passwords)
 
+# Node.js 22 LTS, official binary. SHASUMS256.txt GPG-verified against the Node.js
+# release keys (signer 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356); per-arch sha256 pinned.
+ARG NODE_VERSION=22.23.3
+ARG NODE_SHA256_ARM64=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f
+ARG NODE_SHA256_X64=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in arm64) na=arm64; sum=$NODE_SHA256_ARM64;; amd64) na=x64; sum=$NODE_SHA256_X64;; *) exit 1;; esac \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${na}.tar.xz" -o /tmp/node.tar.xz \
+ && echo "${sum}  /tmp/node.tar.xz" | sha256sum -c - \
+ && mkdir -p /usr/local/node-22 && tar -xJf /tmp/node.tar.xz -C /usr/local/node-22 --strip-components=1 \
+      --exclude='*/include' --exclude='*/share' --exclude='*/lib/node_modules/npm' --exclude='*/lib/node_modules/corepack' --exclude='*/bin/np*' --exclude='*/bin/corepack' \
+ && rm /tmp/node.tar.xz && /usr/local/node-22/bin/node --version
+
 EXPOSE 2358
 WORKDIR /api
 RUN echo "gem: --no-document" > /root/.gemrc && gem install bundler:2.1.4 && RAILS_ENV=production bundle
+COPY languages_active.rb /api/db/languages/active.rb
+COPY languages_archived.rb /api/db/languages/archived.rb
 RUN cp /api/cron/* /etc/cron.d/ && cat /etc/cron.d/* | crontab -
 ENTRYPOINT ["/api/docker-entrypoint.sh"]
 CMD ["/api/scripts/server"]

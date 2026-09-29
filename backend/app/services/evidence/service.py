@@ -52,3 +52,24 @@ async def record_evidence(
         db.add(ev)
     await db.flush()
     return ev
+
+
+async def retire_evidence_for_question(db, question_id) -> list:
+    """A REJECTED question (e.g. its tests were proven wrong by execution) must not
+    keep shaping skill levels: soft-delete every evidence row produced from it
+    (coding submissions and assessment answers) and return the affected students
+    so the caller can recalculate them with the SkillEstimator."""
+    from sqlalchemy import select
+
+    from app.models.assessments import AssessmentAnswer, AssessmentQuestion
+    from app.models.coding import CodingSubmission
+    from app.models.evidence import SkillEvidence
+
+    sources = select(CodingSubmission.id).where(CodingSubmission.question_id == question_id).union(
+        select(AssessmentAnswer.id).join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.assessment_question_id)
+        .where(AssessmentQuestion.question_id == question_id))
+    rows = (await db.scalars(select(SkillEvidence).where(SkillEvidence.source_id.in_(sources),
+                                                         SkillEvidence.is_deleted.is_(False)))).all()
+    for ev in rows:
+        ev.is_deleted = True
+    return sorted({ev.student_id for ev in rows}, key=str)

@@ -41,6 +41,8 @@ class Question(Base, UUIDPk, TimestampMixin):
 
     starter_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     test_cases: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Stable language ids (python/javascript/cpp); NULL = all supported languages.
+    allowed_languages: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     source_type: Mapped[QuestionSourceType] = mapped_column(String)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(

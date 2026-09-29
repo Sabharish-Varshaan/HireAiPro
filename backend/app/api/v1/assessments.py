@@ -8,8 +8,10 @@ from app.api.deps import get_current_user, require_roles
 from app.api.tenancy import get_job_for_member, get_student_profile, member_org_ids
 from app.core.database import get_db
 from app.models.applications import Application
+from app.models.coding import CodingSubmission
+from app.models.evidence import SkillEvidence
 from app.models.assessments import Assessment, AssessmentAnswer, AssessmentAttempt, AssessmentQuestion, AssessmentSection
-from app.models.enums import ApplicationStatus, AssessmentAttemptStatus, EvidenceSourceType, JobStatus, QuestionType, UserRole
+from app.models.enums import QuestionSourceType, ApplicationStatus, AssessmentAttemptStatus, EvidenceSourceType, JobStatus, QuestionType, UserRole
 from app.models.jobs import Job
 from app.models.questions import Question
 from app.models.users import User
@@ -116,6 +118,8 @@ async def get_assessment(assessment_id: uuid.UUID, user: User = Depends(get_curr
         for aq in aqs:
             q = await db.get(Question, aq.question_id)
             view = QuestionOut.model_validate(q) if recruiter_view else QuestionStudentOut.model_validate(q)
+            if not recruiter_view and QuestionSourceType(q.source_type) == QuestionSourceType.AI_GENERATED:
+                view.starter_code = None  # generated starters may contain the solution; never show them
             items.append(AssessmentQuestionOut(id=aq.id, order_index=aq.order_index, question=view))
         section_outs.append(AssessmentSectionOut(id=s.id, title=s.title, order_index=s.order_index, questions=items))
     out = AssessmentDetailOut.model_validate(assessment)
@@ -170,6 +174,9 @@ async def get_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(
 async def autosave_answer(attempt_id: uuid.UUID, payload: SubmitAnswerRequest,
                           user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
     attempt = await _own_attempt(db, user, attempt_id)
+    # Serialize upserts per attempt: two simultaneous saves for the same question
+    # (e.g. autosave + "Run tests") used to both insert, creating duplicate answers.
+    await db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     if attempt.status != AssessmentAttemptStatus.IN_PROGRESS:
         raise HTTPException(409, "Attempt already submitted")
     aq = await db.get(AssessmentQuestion, payload.assessment_question_id)
@@ -199,8 +206,13 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
 
     gateway = get_ai_gateway()
     all_aqs = (await db.scalars(select(AssessmentQuestion).where(AssessmentQuestion.assessment_id == attempt.assessment_id))).all()
-    answers = {a.assessment_question_id: a for a in
-               (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt_id))).all()}
+    all_answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt_id)
+                                    .order_by(AssessmentAnswer.updated_at))).all()
+    answers, dup_answers = {}, {}
+    for a in all_answers:  # legacy duplicates (pre-lock race): keep the most recently updated
+        if a.assessment_question_id in answers:
+            dup_answers.setdefault(a.assessment_question_id, []).append(answers[a.assessment_question_id])
+        answers[a.assessment_question_id] = a
     total_points = earned = 0.0
     for aq in all_aqs:
         question = await db.get(Question, aq.question_id)
@@ -238,7 +250,22 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
                                   source_id=answer.id, difficulty=question.difficulty, confidence=conf, model_id=gateway.model,
                                   prompt_version="rubric_eval_v1", rubric_version=(question.rubric or {}).get("version", "rubric_v1"))
         else:
-            # CODING: score comes only from the latest Judge0 submission (POST /coding/submit).
+            # CODING: score comes only from the latest Judge0 submission (POST /coding/submit),
+            # across any duplicate answer rows; superseded coding evidence is retired.
+            same_q = [answer, *dup_answers.get(aq.id, [])]
+            latest = await db.scalar(select(CodingSubmission).where(
+                CodingSubmission.assessment_answer_id.in_([a.id for a in same_q]), CodingSubmission.status == "COMPLETED")
+                .order_by(CodingSubmission.created_at.desc()))
+            if latest is not None:
+                answer.score = (latest.score or 0.0) * aq.points
+                answer.answer_text = latest.source_code
+                stale = (await db.scalars(select(SkillEvidence).where(
+                    SkillEvidence.student_id == attempt.student_id, SkillEvidence.source_type == EvidenceSourceType.CODING,
+                    SkillEvidence.source_id.in_(select(CodingSubmission.id).where(
+                        CodingSubmission.assessment_answer_id.in_([a.id for a in same_q]))),
+                    SkillEvidence.source_id != latest.id, SkillEvidence.is_deleted.is_(False)))).all()
+                for ev_row in stale:
+                    ev_row.is_deleted = True
             if answer.score is None:
                 answer.score = 0.0
                 await record_evidence(db, attempt.student_id, question.skill_id, EvidenceSourceType.CODING, 0.0,
@@ -289,9 +316,11 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
                                   .order_by(CodingTestResult.test_case_index))).all() if sub else []
         item = {"answer_id": a.id, "assessment_question_id": aq.id, "question_type": q.question_type,
                 "answer_text": a.answer_text, "selected_option_index": a.selected_option_index,
-                "coding": {"passed": sub.passed_count, "total": sub.total_count,
-                           "backends": sorted({"local_fallback" if "local fallback" in (t.judge0_status or "") else "judge0"
-                                               for t in tests})} if sub else None}
+                "coding": {"passed": sub.passed_count, "total": sub.total_count, "language": sub.language,
+                           "judge0_language_id": sub.judge0_language_id,
+                           "backends": sorted(set((sub.execution_backend or "").split(",")) - {""}) or sorted(
+                               {"local_fallback" if "local fallback" in (t.judge0_status or "") else "judge0" for t in tests})}
+                if sub else None}
         if recruiter or attempt.status == AssessmentAttemptStatus.SCORED:
             item.update({"question_text": q.question_text, "score": a.score, "is_correct": a.is_correct})
         if recruiter:

@@ -1,5 +1,7 @@
 import uuid
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, Visibility
@@ -16,6 +18,7 @@ class QuestionCreate(BaseModel):
     rubric: dict | None = None
     starter_code: str | None = None
     test_cases: list[dict] | None = None
+    allowed_languages: list[Literal["python", "javascript", "cpp"]] | None = None  # None = all supported
     question_bank_id: uuid.UUID | None = None
     organization_id: uuid.UUID | None = None
     visibility: Visibility = Visibility.COMPANY_PRIVATE
@@ -32,6 +35,7 @@ class QuestionOut(BaseModel):
     rubric: dict | None
     starter_code: str | None
     test_cases: list | None
+    allowed_languages: list | None = None
     source_type: QuestionSourceType
     visibility: Visibility
     status: QuestionStatus
@@ -55,6 +59,7 @@ class QuestionStudentOut(BaseModel):
     difficulty: str
     options: list | None
     starter_code: str | None
+    allowed_languages: list | None = None  # hidden test cases are never included
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -118,10 +118,10 @@ def validate_semantics(
             r.reasons.append(f"question not supported by its cited context ({float(best):.2f})")
 
     vector_store.ensure_collections()
-    near = vector_store.search(
-        "questions", q_vec, scope, limit=3, skill_ids=[str(skill_id)],
-        extra_must=None,
-    )
+    # Tenant-scoped but NOT skill-scoped: the same problem reworded under a sibling
+    # skill (e.g. Data Structures vs Algorithms) is still a duplicate. Measured
+    # 2026-09-29: such a pair scored 0.969; a genuinely different problem 0.826.
+    near = vector_store.search("questions", q_vec, scope, limit=5, extra_must=None)
     dup = next((p for p in near if p.score >= DUPLICATE_THRESHOLD and p.payload.get("status") != "REJECTED"), None)
     r.checks["not_duplicate"] = dup is None
     if dup:

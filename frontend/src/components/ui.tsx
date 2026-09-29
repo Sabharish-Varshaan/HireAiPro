@@ -5,6 +5,7 @@ export function apiError(err: unknown): string {
   const d = e?.response?.data?.detail;
   if (typeof d === "string") return d;
   if (Array.isArray(d)) return d.map((x: { msg?: string }) => x.msg ?? JSON.stringify(x)).join("; ");
+  if (d && typeof d === "object" && "message" in d) return String((d as { message: unknown }).message);
   if (e?.response?.status) return `Request failed (${e.response.status})`;
   return e?.message ?? "Something went wrong";
 }

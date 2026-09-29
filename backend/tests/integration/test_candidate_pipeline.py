@@ -49,7 +49,17 @@ async def _published_assessment(db, org, job):
     return a, aqs, qs
 
 
+def _judge0_up() -> bool:
+    import httpx
+    from app.core.config import get_settings
+    try:
+        return httpx.get(f"{get_settings().JUDGE0_URL}/about", timeout=3).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 @pytest.mark.asyncio
+@pytest.mark.skipif(not _judge0_up(), reason="BLOCKED: needs the Judge0 stack (code never runs unsandboxed)")
 async def test_full_candidate_pipeline(client, monkeypatch):
     FakeLLM(monkeypatch, {"RubricEvaluation": rubric(0.7, 0.8)})
     async with AsyncSessionLocal() as db:

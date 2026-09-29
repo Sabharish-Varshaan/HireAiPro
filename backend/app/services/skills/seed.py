@@ -1,6 +1,8 @@
 import asyncio
 import re
 
+from app.services.skills.normalizer import _normalize_text
+
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
@@ -109,7 +111,7 @@ RELATED: list[tuple[str, str]] = [
 
 
 def _norm(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", name.lower())
+    return _normalize_text(name)
 
 
 async def seed_skills() -> dict:
