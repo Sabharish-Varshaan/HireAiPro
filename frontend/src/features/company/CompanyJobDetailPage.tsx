@@ -269,6 +269,38 @@ function Candidates({ job }: { job: any }) {
   );
 }
 
+function InterviewPlanCard({ job }: { job: any }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const plan = useQuery({ queryKey: ["interview-template", job.id], queryFn: () => api.get(`/interviews/templates/by-job/${job.id}`).then((r) => r.data),
+    refetchInterval: (q) => (q.state.data?.status === "PREPARING" ? 3000 : false) });
+  const rebuild = useMutation({ mutationFn: () => api.post(`/interviews/templates/by-job/${job.id}/rebuild`), onSuccess: () => qc.invalidateQueries({ queryKey: ["interview-template", job.id] }) });
+  const t = plan.data;
+  const count = (skill: string, d: string) => (t?.questions ?? []).filter((q: any) => q.skill === skill && q.difficulty === d).length;
+  return (
+    <Card title="Interview plan" actions={t ? <Badge>{t.status}</Badge> : null}>
+      {!t && <Empty>Prepared automatically when you publish the assessment.</Empty>}
+      {t && (
+        <div className="space-y-2 text-sm" data-testid="interview-plan">
+          <p className="text-xs text-gray-600">Every candidate is interviewed against the same competencies and rubric ({t.config.rubric.version}); questions come from the prepared pool
+            (question bank first, then knowledge-grounded generation), so no question is invented while a candidate waits. {t.config.min_questions}–{t.config.max_questions} questions, about {t.config.recommended_minutes} minutes.</p>
+          {t.status === "PREPARING" && <p className="text-amber-700 text-xs">Preparing questions…</p>}
+          {t.error && <p className="text-red-600 text-xs">{t.error}</p>}
+          <Table head={["Competency", "Importance", "Required", "Easy", "Medium", "Hard"]}>{t.config.competencies.map((c: any) => (
+            <tr key={c.skill_id}><td className="py-1 pr-3">{c.name}</td><td className="pr-3">{c.importance}</td><td className="pr-3">{c.required ? "yes" : "no"}</td>
+              {["easy", "medium", "hard"].map((d) => <td key={d} className="pr-3">{count(c.name, d) || "—"}</td>)}</tr>))}</Table>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setOpen((v) => !v)}>{open ? "Hide questions" : `Review ${t.questions.length} questions`}</Button>
+            <Button variant="secondary" onClick={() => rebuild.mutate()} disabled={rebuild.isPending || t.status === "PREPARING"}>Rebuild pool</Button>
+          </div>
+          {open && <ul className="text-xs space-y-1">{t.questions.map((q: any) => (
+            <li key={q.id}><Badge tone="gray">{q.skill} · {q.difficulty}</Badge> {q.question_text} <span className="text-gray-400">({q.source === "question_bank" ? "question bank" : "generated"})</span></li>))}</ul>}
+          <ErrorBox error={rebuild.error} />
+        </div>)}
+    </Card>
+  );
+}
+
 const APPROVAL_LABEL: Record<string, string> = {
   NOT_REQUIRED: "Not submitted yet (goes to the placement officer when you publish)", PENDING: "Waiting for the placement officer's approval",
   APPROVED: "Approved: visible to eligible students", REJECTED: "Rejected by the placement officer" };
@@ -373,6 +405,7 @@ export default function CompanyJobDetailPage() {
       <DistributionCard job={job} />
       {job.skills.length > 0 || job.status !== "DRAFT" ? <RequirementsEditor job={job} /> : null}
       {job.status !== "DRAFT" && job.status !== "SKILLS_EXTRACTED" && <AssessmentPanel job={job} processing={processing} />}
+      {job.status === "PUBLISHED" && <InterviewPlanCard job={job} />}
       {job.status === "PUBLISHED" && <Candidates job={job} />}
     </div>
   );

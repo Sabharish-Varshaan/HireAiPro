@@ -119,3 +119,17 @@ async def test_students_and_recruiters_cannot_use_officer_endpoints(client, ctx)
         assert (await client.get(base, headers=h)).status_code == 403
         assert (await client.post(f"{base}/invite", headers=h, json={"email": "a@example.com"})).status_code == 403
         assert (await client.post(f"{base}/import/confirm", headers=h, files={"file": _csv([])})).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_overview_counts_are_sql_derived_and_tenant_scoped(client, ctx):
+    from tests.factories import make_company, make_job, make_application
+    base = f"/institutions/{ctx['iid']}"
+    await client.post(f"{base}/student-records/invite", headers=ctx["h"], json={"email": f"{uniq('pend')}@example.com"})
+    await client.post(f"{base}/student-records/invite", headers=ctx["h"], json={"email": ctx["existing"]})  # links an existing account
+    r = await client.get(f"{base}/overview", headers=ctx["h"])
+    assert r.status_code == 200
+    o = r.json()
+    assert (o["active_students"], o["pending_invitations"], o["applications"], o["shortlisted"], o["offers"]) == (1, 1, 0, 0, 0)
+    assert o["profile_completion_pct"] == 0.0 and o["assessment_completed"] == 0 and o["interview_completed"] == 0
+    assert (await client.get(f"{base}/overview", headers=ctx["h_other"])).status_code == 404

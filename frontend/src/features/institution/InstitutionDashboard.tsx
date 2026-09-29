@@ -12,6 +12,7 @@ export default function InstitutionDashboard() {
   const structure = useQuery({ queryKey: ["structure", inst?.id], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/structure`).then((r) => r.data) });
   const roster = useQuery({ queryKey: ["roster", inst?.id, params], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/roster`, { params }).then((r) => r.data) });
   const an = useQuery({ queryKey: ["inst-analytics", inst?.id, params], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/analytics`, { params }).then((r) => r.data) });
+  const overview = useQuery({ queryKey: ["inst-overview", inst?.id], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/overview`).then((r) => r.data) });
   const summary = useMutation({ mutationFn: () => api.post(`/institutions/${inst.id}/analytics/summary`, null, { params }).then((r) => r.data) });
 
   if (mine.isLoading) return <Loading />;
@@ -32,6 +33,15 @@ export default function InstitutionDashboard() {
             <option value="">All cohorts</option>{(structure.data?.cohorts ?? []).map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
         </div>
       </div>
+      {overview.data && (
+        <div className="grid grid-cols-4 gap-3 text-sm" data-testid="overview-cards">
+          {[["Active students", overview.data.active_students], ["Pending invitations", overview.data.pending_invitations],
+            ["Profile completion", overview.data.profile_completion_pct == null ? "—" : `${overview.data.profile_completion_pct}%`],
+            ["Assessment completed", overview.data.assessment_completed], ["Interview completed", overview.data.interview_completed],
+            ["Applications", overview.data.applications], ["Shortlisted", overview.data.shortlisted], ["Offers", overview.data.offers]].map(([label, v]) => (
+            <div key={label as string} className="border border-gray-200 rounded-md p-3 bg-white"><p className="text-xs text-gray-500">{label}</p><p className="text-xl font-semibold">{v as any}</p></div>))}
+        </div>
+      )}
       <ErrorBox error={an.error} onRetry={an.refetch} />
       {an.isLoading && <Loading label="Running analytics queries…" />}
       {a && (

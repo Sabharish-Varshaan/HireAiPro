@@ -124,6 +124,13 @@ async def student_applications(institution_id: uuid.UUID, student_id: uuid.UUID,
                               "applied_at": a.created_at} for a, j, o in rows]}
 
 
+@router.get("/{institution_id}/overview")
+async def overview(institution_id: uuid.UUID, user: User = Depends(require_roles(*STAFF, UserRole.PLATFORM_ADMIN)),
+                   db: AsyncSession = Depends(get_db)):
+    await _member(db, user, institution_id)
+    return await ia.overview_counts(db, institution_id)
+
+
 @router.get("/{institution_id}/analytics")
 async def analytics_bundle(institution_id: uuid.UUID, department_id: uuid.UUID | None = None, cohort_id: uuid.UUID | None = None,
                            user: User = Depends(require_roles(*STAFF, UserRole.PLATFORM_ADMIN)), db: AsyncSession = Depends(get_db)):

@@ -201,3 +201,31 @@ async def summarize(report: dict) -> dict:
         return {"text": s.summary, "generated_by": "LLM from the SQL figures above"}
     except AIGatewayError as exc:
         return {"text": None, "error": str(exc)}
+
+
+async def overview_counts(db: AsyncSession, institution_id) -> dict:
+    """Placement-officer overview cards: every value is a SQL count over authoritative rows; no model is involved."""
+    from app.models.accounts import InstitutionStudent
+    from app.models.interviews import Interview
+
+    status_counts = dict((await db.execute(select(InstitutionStudent.status, func.count()).where(
+        InstitutionStudent.institution_id == institution_id).group_by(InstitutionStudent.status))).all())
+    active_ids = select(StudentProfile.id).where(StudentProfile.institution_id == institution_id)
+    active = await db.scalar(select(func.count()).select_from(StudentProfile).where(StudentProfile.institution_id == institution_id)) or 0
+    complete = await db.scalar(select(func.count()).select_from(StudentProfile).where(
+        StudentProfile.institution_id == institution_id, StudentProfile.resume_document_id.is_not(None),
+        StudentProfile.headline.is_not(None), StudentProfile.headline != "")) or 0
+    assessed = await db.scalar(select(func.count(func.distinct(AssessmentAttempt.student_id))).where(
+        AssessmentAttempt.student_id.in_(active_ids), AssessmentAttempt.status == "SCORED")) or 0
+    interviewed = await db.scalar(select(func.count(func.distinct(Interview.student_id))).where(
+        Interview.student_id.in_(active_ids), Interview.status == "COMPLETED")) or 0
+    app_counts = dict((await db.execute(select(Application.status, func.count()).where(
+        Application.student_id.in_(active_ids)).group_by(Application.status))).all())
+    total_apps = sum(app_counts.values())
+    return {
+        "active_students": active, "pending_invitations": status_counts.get("PENDING", 0), "disabled_students": status_counts.get("DISABLED", 0),
+        "profile_complete": complete, "profile_completion_pct": round(100 * complete / active, 1) if active else None,
+        "assessment_completed": assessed, "interview_completed": interviewed, "applications": total_apps,
+        "shortlisted": app_counts.get("SHORTLISTED", 0), "offers": app_counts.get("OFFER", 0),
+        "funnel": {k: v for k, v in app_counts.items()},
+    }
