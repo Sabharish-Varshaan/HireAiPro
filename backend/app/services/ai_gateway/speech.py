@@ -12,30 +12,31 @@ WHISPER_DEVICE=cuda and WHISPER_COMPUTE_TYPE=float16 on an NVIDIA host.
 import threading
 
 from app.core.config import get_settings
+from app.services.ai_gateway.embeddings import _IdleReleasedModel
 
 settings = get_settings()
 
 
-class SpeechToTextService:
+class SpeechToTextService(_IdleReleasedModel):
+    """Released after MODEL_IDLE_UNLOAD_SECONDS like the embedding models."""
+
     def __init__(self, model_name: str, device: str, compute_type: str) -> None:
-        self.model_name = model_name
+        super().__init__(model_name)
         self.device = device
         self.compute_type = compute_type
-        self._model = None
-        self._lock = threading.Lock()
 
-    def _load(self):
-        if self._model is None:
-            with self._lock:
-                if self._model is None:
-                    from faster_whisper import WhisperModel
+    def _build(self):
+        from faster_whisper import WhisperModel
 
-                    self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
-        return self._model
+        return WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
 
     def transcribe(self, audio_path: str) -> dict:
-        segments, info = self._load().transcribe(audio_path, beam_size=5, vad_filter=True)
-        text = " ".join(s.text.strip() for s in segments).strip()
+        def decode(model):
+            # segments is a lazy generator: consume it while the model is held.
+            segments, info = model.transcribe(audio_path, beam_size=5, vad_filter=True)
+            return " ".join(s.text.strip() for s in segments).strip(), info
+
+        text, info = self._run(decode)
         return {
             "text": text,
             "language": info.language,

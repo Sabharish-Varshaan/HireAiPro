@@ -111,7 +111,7 @@ def validate_semantics(
         r.reasons.append(f"weak alignment with skill '{skill_label}' ({align:.2f})")
 
     if context_texts:
-        best = max(get_reranker_service()._load().predict([[question_text, c] for c in context_texts]))
+        best = max(get_reranker_service()._run(lambda m: m.predict([[question_text, c] for c in context_texts])))
         grounded = float(best) >= GROUNDING_THRESHOLD
         r.checks["grounding"] = grounded
         if not grounded:

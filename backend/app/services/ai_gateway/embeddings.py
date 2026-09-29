@@ -1,13 +1,18 @@
-"""BGE-M3 embeddings and BGE reranker, loaded once per process.
+"""BGE-M3 embeddings and BGE reranker.
 
-Both models are ~2.2GB. They load lazily on first use and are then reused
-for the life of the process, guarded by a lock so concurrent requests in
-the API process never trigger a second load. Celery runs with
-`--pool=solo` (one process), so there's exactly one copy per worker; see
-docs/LOCAL_SETUP.md for concurrency guidance.
+They load lazily on first use, guarded by a lock so concurrent requests never
+trigger a second load, and are released again after MODEL_IDLE_UNLOAD_SECONDS
+without use. Both the API and the Celery worker need them, and keeping both
+copies resident for the life of each process measured ~4.5 GB footprint per
+process on an M4 (2026-09-29), enough to push a 16 GB laptop into swap and
+process kills. A reload costs a few seconds; the weights, and therefore every
+vector and rerank score, are identical.
 """
 
+import gc
+import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,49 +43,111 @@ class RetrievedDocument:
     rerank_score: float | None = None
 
 
-class EmbeddingService:
-    def __init__(self, model_name: str) -> None:
+logger = logging.getLogger(__name__)
+
+
+class _IdleReleasedModel:
+    """Loads on demand, runs inference under the lock (so a release can never
+    pull the weights out from under a running call) and frees the model after
+    `idle_seconds` without use. idle_seconds <= 0 keeps it resident."""
+
+    def __init__(self, model_name: str, idle_seconds: int | None = None) -> None:
         self.model_name = model_name
+        self.idle_seconds = settings.MODEL_IDLE_UNLOAD_SECONDS if idle_seconds is None else idle_seconds
         self._model = None
+        self._last_used = 0.0
         self._lock = threading.Lock()
+        self._janitor: threading.Thread | None = None
 
-    def _load(self):
-        if self._model is None:
-            with self._lock:
-                if self._model is None:
-                    from sentence_transformers import SentenceTransformer
+    def _build(self):  # pragma: no cover - overridden
+        raise NotImplementedError
 
-                    self._model = SentenceTransformer(self.model_name, model_kwargs=_model_kwargs())
-        return self._model
+    def _run(self, fn):
+        with self._lock:
+            if self._model is None:
+                self._model = self._build()
+                self._start_janitor()
+            self._last_used = time.monotonic()
+            try:
+                return fn(self._model)
+            finally:
+                self._last_used = time.monotonic()
+
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def release_if_idle(self, now: float | None = None) -> bool:
+        with self._lock:
+            if self._model is None or self.idle_seconds <= 0:
+                return False
+            if (now if now is not None else time.monotonic()) - self._last_used < self.idle_seconds:
+                return False
+            self._model = None
+        gc.collect()
+        _empty_accelerator_cache()
+        logger.info("released idle model %s", self.model_name)
+        return True
+
+    def _start_janitor(self) -> None:
+        if self.idle_seconds <= 0 or (self._janitor and self._janitor.is_alive()):
+            return
+
+        def loop() -> None:
+            while True:
+                time.sleep(min(30, self.idle_seconds))
+                self.release_if_idle()
+
+        self._janitor = threading.Thread(target=loop, name=f"idle-release:{self.model_name}", daemon=True)
+        self._janitor.start()
+
+
+def _cached_first(build):
+    """Reloads after an idle release happen often, so load from the local HF cache
+    without network round-trips; only a model that was never downloaded goes online."""
+    try:
+        return build(local_files_only=True)
+    except OSError:
+        return build()
+
+
+def _empty_accelerator_cache() -> None:
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not empty accelerator cache", exc_info=True)
+
+
+class EmbeddingService(_IdleReleasedModel):
+    def _build(self):
+        from sentence_transformers import SentenceTransformer
+
+        return _cached_first(lambda **kw: SentenceTransformer(self.model_name, model_kwargs=_model_kwargs(), **kw))
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        vectors = self._load().encode(texts, normalize_embeddings=True, batch_size=16)
+        vectors = self._run(lambda m: m.encode(texts, normalize_embeddings=True, batch_size=16))
         return [v.tolist() for v in vectors]
 
 
-class RerankerService:
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-        self._model = None
-        self._lock = threading.Lock()
+class RerankerService(_IdleReleasedModel):
+    def _build(self):
+        from sentence_transformers import CrossEncoder
 
-    def _load(self):
-        if self._model is None:
-            with self._lock:
-                if self._model is None:
-                    from sentence_transformers import CrossEncoder
-
-                    self._model = CrossEncoder(self.model_name, model_kwargs=_model_kwargs())
-        return self._model
+        return _cached_first(lambda **kw: CrossEncoder(self.model_name, model_kwargs=_model_kwargs(), **kw))
 
     def rerank(self, query: str, candidates: list[RetrievedDocument], top_n: int) -> list[RetrievedDocument]:
         """Scores only the already-retrieved candidates (e.g. Qdrant top-20..50)
         and returns the best `top_n`. Never called on a whole collection."""
         if not candidates:
             return []
-        scores = self._load().predict([[query, c.text] for c in candidates])
+        scores = self._run(lambda m: m.predict([[query, c.text] for c in candidates]))
         for c, s in zip(candidates, scores):
             c.rerank_score = float(s)
         return sorted(candidates, key=lambda c: c.rerank_score, reverse=True)[:top_n]

@@ -16,6 +16,7 @@ from app.core.database import AsyncSessionLocal, engine
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: needs the local Ollama model (slow); run with -m live")
+    config.addinivalue_line("markers", "judge0: needs the running cgroup-v2 Judge0 stack; run with -m judge0")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -23,9 +24,12 @@ def pytest_collection_modifyitems(config, items):
     if config.getoption("-m") or os.environ.get("RUN_LIVE") == "1":
         return
     skip = pytest.mark.skip(reason="live LLM test; run with -m live")
+    skip_j0 = pytest.mark.skip(reason="needs the Judge0 stack; run with -m judge0")
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip)
+        if "judge0" in item.keywords:
+            item.add_marker(skip_j0)
 
 
 @pytest_asyncio.fixture

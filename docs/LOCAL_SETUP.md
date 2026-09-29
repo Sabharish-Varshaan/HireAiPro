@@ -47,24 +47,30 @@ No mode requires a paid provider. Status: Admin → AI usage, or `GET /api/v1/ad
   the worker to release memory if needed.
 - Ollama: requests use `keep_alive: 2m`, so qwen3.5:4b leaves memory 2 minutes after its last
   fallback call. Force-unload: `curl localhost:11435/api/generate -d '{"model":"qwen3.5:4b","keep_alive":0}'`.
-- Judge0 (amd64 under emulation) used **2.3 GB** and can't execute code on this host anyway, so it
-  is behind a Compose profile and off by default.
+- Local models (BGE-M3, reranker, Whisper) are **released after 5 idle minutes**
+  (`MODEL_IDLE_UNLOAD_SECONDS`, 0 = keep resident). Measured on M4: API 5.4 GB with both models
+  loaded → 1.3 GB after release; the next request reloads from the local cache in ~15 s.
+- Judge0 (cgroup-v2 build, native arm64): ~0.5 GB idle with 1 worker; capped at 1.5 GB per
+  container so it can never exhaust the Docker VM.
 
-## Judge0
+## Judge0 (sandboxed code execution)
 ```bash
-docker compose --profile judge0 up -d     # opt-in
+docker compose --profile judge0 up -d --build     # first build ~5 min (compiles Ruby/Python/isolate)
 ```
-On macOS Docker Desktop, Judge0 1.13.x cannot sandbox code: its `isolate` 1.8.1 needs cgroup v1 and
-Docker Desktop's VM is cgroup v2 only (judge0/judge0#514). The coding endpoint then uses a clearly
-labelled local fallback (`execution_backend: "local_fallback"` with the reason) — Python only,
-wall-clock timeout, **no sandbox isolation**. It never claims Judge0 ran. On a Linux host with
-cgroup v1 (or hybrid) Judge0 runs natively and results say `execution_backend: "judge0"`.
+Uses a cgroup-v2 Judge0 build from reviewed, pinned sources (`infra/judge0`, evidence in
+[JUDGE0_CGROUP_V2.md](JUDGE0_CGROUP_V2.md)); it sandboxes code on Docker Desktop / Apple Silicon.
+Results say `execution_backend: "judge0"`.
+
+If Judge0 is **not running**, Python submissions use the labelled local fallback
+(`execution_backend: "local_fallback"`, development only, **no sandbox**). Once Judge0 is reachable
+the client fails closed: a timeout or sandbox error is reported as such and never re-run locally.
 
 ## Tests
 ```bash
 cd backend
 .venv/bin/pytest -q                 # deterministic suite (uses database hireai_test + Qdrant prefix test_)
 .venv/bin/pytest -q -m live         # real models (Groq/OpenAI/Ollama per router); costs fractions of a cent
+.venv/bin/pytest -q -m judge0       # real Judge0 sandbox (needs the judge0 profile running)
 .venv/bin/python scripts/e2e_full_scenario.py   # fresh E2E against the running stack + cost report
 ```
 The test database: `docker exec hireai_postgres psql -U hireai -c "create database hireai_test"`, then

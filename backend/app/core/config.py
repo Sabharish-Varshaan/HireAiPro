@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
     EMBEDDING_FP16: bool = True
+    MODEL_IDLE_UNLOAD_SECONDS: int = 300  # free local models after 5 idle minutes; 0 keeps them resident
 
     WHISPER_MODEL: str = "small.en"
     WHISPER_DEVICE: str = "cpu"
@@ -64,6 +65,7 @@ class Settings(BaseSettings):
     INTERVIEW_MAX_TURNS: int = 5
 
     JUDGE0_URL: str = "http://localhost:2358"
+    JUDGE0_POLL_TIMEOUT_SECONDS: int = 30  # per test case; past it the run fails closed (never re-run unsandboxed)
 
     SCORING_VERSION: str = "skill_scoring_v1"
     MATCHING_VERSION: str = "matching_v1"
