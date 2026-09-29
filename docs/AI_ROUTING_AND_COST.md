@@ -111,3 +111,9 @@ The fallback runs on the host Ollama.app at `http://localhost:11434` (qwen3.5:4b
 had no listener, so the emergency fallback was silently unreachable. Verified: with Luna and Groq pointed
 at a dead port, `scripts/fallback_probe.py` was served by ollama (cold 37 s) and the model unloaded after.
 Spoken interview questions add **no** cost (browser speech).
+
+## Interview turns (2026-09-29)
+`interview_rubric_evaluation` (the candidate is waiting) uses the AGENT order Groq -> luna -> Ollama; measured p50 975 ms on Groq vs 3,863 ms on luna, and Groq's free
+tier returned 429 during the traces, so most scoring ran on luna. Interview questions come from a pool prepared at publish (`interview_pool_question`, luna,
+about 2.7 s p50 each, 30 questions for a 10-skill job, one-off); no model call happens to produce the next question on the candidate path. Assessment submit scores
+written answers concurrently. Spoken questions cost nothing (browser speech).

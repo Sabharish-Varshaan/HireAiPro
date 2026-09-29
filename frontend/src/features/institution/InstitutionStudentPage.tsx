@@ -34,7 +34,7 @@ export default function InstitutionStudentPage() {
   if (q.error) return <ErrorBox error={q.error} />;
   return (
     <div className="max-w-4xl space-y-4">
-      <Link to="/institution" className="text-xs text-gray-500 underline">← Roster</Link>
+      <Link to="/institution/students" className="text-xs text-gray-500 underline">← Students</Link>
       <h1 className="text-lg font-semibold">{q.data.name}</h1>
       <Card title="Verified skills (SkillEstimator)">
         {skills.isLoading && <Loading />}

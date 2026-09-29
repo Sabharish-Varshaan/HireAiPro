@@ -74,3 +74,8 @@ company candidate page and the institution student page ("View Timeline").
   shim were injected, because the in-app browser denies real camera/mic and cannot grant fullscreen. The real-device
   path in that browser correctly failed the check (camera/microphone FAILED, no start button).
   **A real-device pass has not been tested**; run it in a normal Chrome/Safari window.
+
+## Not implemented
+Screen sharing (`getDisplayMedia`, `SCREEN_SHARE_STARTED/ENDED`) is not implemented; it was evaluated as an optional strict-mode addition. A page refresh during an
+attempt re-runs the system check (consent is kept, the attempt timer keeps running). The proctoring gate no longer mounts before the application state has loaded,
+which previously left an empty CREATED session on every page load; reviewers do not see sessions that were never consented.

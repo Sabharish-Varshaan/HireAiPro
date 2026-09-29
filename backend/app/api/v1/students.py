@@ -168,8 +168,16 @@ async def my_full_profile(user: User = Depends(require_roles(UserRole.STUDENT)),
     async def rows(model):
         return (await db.scalars(select(model).where(model.student_id == profile.id).order_by(model.created_at))).all()
 
+    from app.models.accounts import InstitutionStudent
+    from app.models.institutions import Cohort, Institution
+
+    inst = await db.get(Institution, profile.institution_id) if profile.institution_id else None
+    rec = await db.scalar(select(InstitutionStudent).where(InstitutionStudent.user_id == user.id, InstitutionStudent.status == "ACTIVE")) if inst else None
+    cohort = await db.get(Cohort, profile.cohort_id) if profile.cohort_id else None
     return {
         "profile": StudentProfileOut.model_validate(profile),
+        "institution": {"name": inst.name, "cohort": cohort.name if cohort else None, "student_id": rec.student_code if rec else None,
+                        "graduation_year": rec.graduation_year if rec else None} if inst else None,
         "education": [{"id": r.id, "institution_name": r.institution_name, "degree": r.degree, "field_of_study": r.field_of_study,
                        "start_year": r.start_year, "end_year": r.end_year, "gpa": r.gpa} for r in await rows(StudentEducation)],
         "experience": [{"id": r.id, "company_name": r.company_name, "title": r.title, "description": r.description,

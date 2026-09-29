@@ -129,6 +129,7 @@ async def _complete(db, interview: Interview, actor_id) -> None:
 @router.post("/{interview_id}/next-turn", response_model=StudentInterviewTurnView | None)
 async def next_turn(interview_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)),
                     db: AsyncSession = Depends(get_db)):
+    actor_id = user.id  # read once: _settle_pending ends the read snapshot, which expires ORM objects loaded before it
     interview = await _own_interview(db, user, interview_id)
     if interview.status == "COMPLETED":
         return None
@@ -136,13 +137,13 @@ async def next_turn(interview_id: uuid.UUID, user: User = Depends(require_roles(
                                                           InterviewTurn.student_answer_text.is_(None)))
     if pending:  # idempotent: don't generate a second question while one is unanswered
         return await _student_turn(db, pending)
-    await _settle_pending(db, interview, user.id, settings.INTERVIEW_EVAL_CATCHUP_SECONDS)
+    await _settle_pending(db, interview, actor_id, settings.INTERVIEW_EVAL_CATCHUP_SECONDS)
     try:
         turn = await decide_next_turn(db, interview)
     except AIGatewayError as exc:
         raise HTTPException(503, f"The interviewer model is unavailable; try again shortly. ({exc})")
     if turn is None:
-        await _complete(db, interview, user.id)
+        await _complete(db, interview, actor_id)
         return None
     await db.commit()
     return await _student_turn(db, turn)

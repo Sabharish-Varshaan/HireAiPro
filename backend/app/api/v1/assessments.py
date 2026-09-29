@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import uuid
 from types import SimpleNamespace
@@ -240,19 +241,16 @@ async def get_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(
         await db.refresh(attempt)
     fz = await ver.load_frozen(db, attempt)
     answers = {a.assessment_question_id: a for a in (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()}
-    sections, n = [], 0
-    for sec in fz.sections:
-        order = (attempt.question_order or {}).get(str(sec["id"])) or [str(i) for i in sec["aq_ids"]]
-        items = []
-        for aq_id in order:
-            q = fz.by_aq[uuid.UUID(str(aq_id))]
-            n += 1
-            a = answers.get(q.aq_id)
-            items.append({"id": q.aq_id, "number": n, "question": ver.student_question(attempt, q),
-                          "answer": {"answer_id": a.id if a else None, "answer_text": a.answer_text if a else None,
-                                     "selected_option_index": ver.to_displayed(attempt, q.aq_id, a.selected_option_index) if a else None,
-                                     "marked_for_review": bool(a.marked_for_review) if a else False}})
-        sections.append({"id": sec["id"], "title": sec["title"], "questions": items})
+    sec_title = {aq: sec["title"] for sec in fz.sections for aq in sec["aq_ids"]}
+    items = []
+    for n, aq_id in enumerate(ver.ordered_ids(attempt, fz), start=1):
+        q = fz.by_aq[aq_id]
+        a = answers.get(q.aq_id)
+        items.append({"id": q.aq_id, "number": n, "section": sec_title.get(q.aq_id), "question": ver.student_question(attempt, q),
+                      "answer": {"answer_id": a.id if a else None, "answer_text": a.answer_text if a else None,
+                                 "selected_option_index": ver.to_displayed(attempt, q.aq_id, a.selected_option_index) if a else None,
+                                 "marked_for_review": bool(a.marked_for_review) if a else False}})
+    sections = [{"id": "attempt", "title": "Assessment", "questions": items}]
     return {"attempt": _student_attempt(attempt), "started_at": attempt.started_at, "expires_at": attempt.expires_at,
             "server_time": ver.now(), "sections": sections}
 
@@ -316,6 +314,21 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
         if a.assessment_question_id in answers:
             dup_answers.setdefault(a.assessment_question_id, []).append(answers[a.assessment_question_id])
         answers[a.assessment_question_id] = a
+    # Written answers are scored concurrently (bounded): sequential scoring made submit take ~4 s per written question.
+    sem = asyncio.Semaphore(4)
+
+    async def _score(q, a):
+        async with sem:
+            return a.id, await gateway.evaluate_rubric(
+                a.answer_text, {"question": q.question_text, "expected_concepts": q.expected_concepts or [], **(q.rubric or {})},
+                RubricEvaluation, related_entity_type="assessment_answer", related_entity_id=a.id)
+
+    to_score = [(q, answers[q.aq_id]) for q in fz.by_aq.values()
+                if q.question_type == QuestionType.TECHNICAL.value and q.aq_id in answers and (answers[q.aq_id].answer_text or "").strip()]
+    try:
+        tech_evals = dict(await asyncio.gather(*(_score(q, a) for q, a in to_score)))
+    except AIGatewayError as exc:
+        raise HTTPException(503, f"Rubric evaluation is unavailable right now; your answers are saved. ({exc})")
     total_points = earned = 0.0
     for question in fz.by_aq.values():
         aq = SimpleNamespace(id=question.aq_id, points=question.points)
@@ -335,15 +348,7 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
                                   rubric_version="mcq_exact_match")
         elif qtype == QuestionType.TECHNICAL:
             if (answer.answer_text or "").strip():
-                try:
-                    ev: RubricEvaluation = await gateway.evaluate_rubric(
-                        answer.answer_text,
-                        {"question": question.question_text, "expected_concepts": question.expected_concepts or [],
-                         **(question.rubric or {})},
-                        RubricEvaluation, related_entity_type="assessment_answer", related_entity_id=answer.id,
-                    )
-                except AIGatewayError as exc:
-                    raise HTTPException(503, f"Rubric evaluation is unavailable right now; your answers are saved. ({exc})")
+                ev = tech_evals[answer.id]  # scored concurrently above
                 answer.rubric_evaluation = ev.model_dump()
                 answer.score = ev.overall_score * aq.points
                 norm, conf = ev.overall_score, ev.evaluator_confidence

@@ -1,16 +1,16 @@
 # Implementation Status
 
-Verified state as of the privacy / proctoring / voice pass (2026-09-29). Every item marked DONE was
+Verified state as of the three-role account / campus / assessment / interview pass (2026-09-29, later the same day than the previous pass). Every item marked DONE was
 executed, not just coded; the evidence is noted beside it.
 
 ## Test totals (last full run, 2026-09-29, sequential under memwatch)
 | Suite | Passed | Failed | Skipped* |
 |---|---|---|---|
-| unit (`tests/unit`) | 94 | 0 | 0 |
-| integration (`tests/integration`) | 34 | 0 | 12 |
-| security (`tests/security`) | 17 | 0 | 1 |
+| unit (`tests/unit`) | 106 | 0 | 0 |
+| integration (`tests/integration`) | 61 | 0 | 12 |
+| security (`tests/security`) | 21 | 0 | 1 |
 | agents (`tests/agents`) | 12 | 0 | 2 |
-| **full default run** | **157** | **0** | 15 |
+| **full default run** | **200** | **0** | 15 |
 | Judge0 (`-m judge0`) | 11 | 0 | — |
 | live providers (`-m live`) | 4 | 0 | — |
 
@@ -38,6 +38,12 @@ real-device run NOT TESTED).
 | Judge0 execution (Python, Node, C++) | DONE (cgroup-v2 build, fails closed) | `-m judge0` 11/11 |
 | Student score privacy | DONE | [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md) |
 | Proctoring + reviewer timeline | DONE (simulated devices) | [PROCTORING.md](PROCTORING.md) |
+| Invitations, claim, password reset, dev outbox | DONE | [ACCOUNTS.md](ACCOUNTS.md); browser E2E |
+| Placement-officer student import / invite / resend / disable | DONE | E2E + `test_student_import.py` |
+| Company -> institution approval -> eligible students | DONE | E2E + `test_opportunities.py` |
+| Frozen assessment version, server timer, whole-assessment shuffle, mark/navigator | DONE | E2E + `test_assessment_lifecycle.py`, `test_assessment_layout.py` |
+| Coding: samples + hidden tests, Run/Submit | DONE | E2E; live yield 3/3 questions accepted |
+| Interview pool + budgeted scoring | DONE | [INTERVIEW_LATENCY.md](INTERVIEW_LATENCY.md) |
 | Spoken interview questions | DONE | browser E2E: Replay +0 ai_runs |
 
 ## Known limitations

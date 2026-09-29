@@ -32,7 +32,7 @@ export function AssessmentRunner({ assessmentId, applicationId, onSubmitted }: {
   const timers = useRef<Record<string, number>>({});
   const autoSubmitted = useRef(false);
 
-  const flat: any[] = (session.data?.sections ?? []).flatMap((s: any) => s.questions.map((q: any) => ({ ...q, section: s.title })));
+  const flat: any[] = (session.data?.sections ?? []).flatMap((s: any) => s.questions.map((q: any) => ({ ...q, section: q.section ?? s.title })));
 
   useEffect(() => {
     if (!session.data) return;
@@ -93,7 +93,7 @@ export function AssessmentRunner({ assessmentId, applicationId, onSubmitted }: {
     return (
       <div className="space-y-2" data-testid="assessment-completed">
         <p className="text-sm font-medium">Assessment completed</p>
-        <p className="text-xs text-gray-500">Your answers were submitted for review. Results are shared with the employer; your development feedback is under "Skills &amp; career".</p>
+        <p className="text-xs text-gray-500">Your answers were submitted for review. Results are shared with the employer; your development feedback appears on this page once your interview is done.</p>
         <ul className="text-xs text-gray-600 space-y-1">
           {(existing.data?.answers ?? []).map((a: any) => (
             <li key={a.answer_id}><Badge tone="gray">{a.question_type}</Badge> {a.question_text?.slice(0, 90)} — {a.completed ? "answered" : "not answered"}

@@ -46,11 +46,6 @@ export default function InstitutionDashboard() {
       {an.isLoading && <Loading label="Running analytics queries…" />}
       {a && (
         <>
-          <div className="grid grid-cols-4 gap-3">
-            {[["Students", a.placement.total_students], ["With applications", a.placement.students_with_applications],
-              ["Shortlisted", a.placement.shortlisted], ["Offers", a.placement.offers]].map(([l, v]) => (
-              <Card key={l as string}><p className="text-xs text-gray-500">{l}</p><p className="text-2xl font-semibold">{v as number}</p></Card>))}
-          </div>
           <div className="grid md:grid-cols-2 gap-4">
             <Card title="Role readiness (from stored matching_v1 scores)">
               <p className="text-sm">{a.readiness.students_ready} of {a.readiness.students_matched} matched students have required-skill fit ≥ {pct(a.readiness.readiness_threshold)}; average match {pct(a.readiness.avg_match_score, 1)}.</p>

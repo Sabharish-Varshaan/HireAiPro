@@ -316,7 +316,7 @@ function DistributionCard({ job }: { job: any }) {
   });
   const locked = job.institution_approval === "APPROVED";
   return (
-    <Card title="Distribution" actions={job.distribution_type === "INSTITUTION" ? <Badge>{job.institution_approval}</Badge> : <Badge>OPEN MARKET</Badge>}>
+    <Card title="Distribution" actions={job.distribution_type === "INSTITUTION" ? <Badge>{job.institution_approval === "NOT_REQUIRED" ? "NOT SUBMITTED" : job.institution_approval}</Badge> : <Badge>OPEN MARKET</Badge>}>
       <div className="flex gap-2 items-center text-sm">
         <select className={inputCls} value={type} disabled={locked} onChange={(e) => setType(e.target.value)} data-testid="distribution-type">
           <option value="OPEN_MARKET">Open market: every student</option><option value="INSTITUTION">Partner institution (needs approval)</option></select>

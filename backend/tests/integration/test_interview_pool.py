@@ -188,3 +188,39 @@ async def test_slow_scoring_never_blocks_the_next_question_and_is_recorded_once(
     async with AsyncSessionLocal() as db:
         rows = (await db.scalars(select(InterviewTurn).where(InterviewTurn.interview_id == iv["id"]))).all()
         assert all(r.rubric_evaluation is not None for r in rows if r.student_answer_text)
+
+
+@pytest.mark.asyncio
+async def test_interview_completes_cleanly_while_the_last_score_is_still_running(client, ctx, monkeypatch):
+    """Regression (found in browser E2E): the closing next-turn returned 500 when the final answer was still being scored."""
+    import asyncio
+
+    from app.api.v1 import interviews as api
+    from app.models.interviews import Interview
+    from app.schemas.rubric import RubricEvaluation
+
+    await P.fill_pool(ctx["job"])
+
+    async def slow_eval(turn):
+        await asyncio.sleep(1.0)
+        return RubricEvaluation(concept_accuracy=0.6, reasoning=0.6, completeness=0.6, communication=0.6,
+                                demonstrated_concepts=[], missing_concepts=[], evaluator_confidence=0.8)
+    monkeypatch.setattr(api, "evaluate_turn_answer", slow_eval)
+    monkeypatch.setattr(api.settings, "INTERVIEW_EVAL_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(api.settings, "INTERVIEW_EVAL_CATCHUP_SECONDS", 0.05)
+    iv = (await client.post("/interviews/start", headers=ctx["hs"], json={"application_id": ctx["app"]})).json()
+    async with AsyncSessionLocal() as db:
+        (await db.get(Interview, iv["id"])).max_turns = 2
+        await db.commit()
+    for _ in range(2):
+        q = (await client.post(f"/interviews/{iv['id']}/next-turn", headers=ctx["hs"])).json()
+        a = await client.post(f"/interviews/turns/{q['id']}/answer", headers=ctx["hs"], json={"answer_text": "An answer of some length. " * 4, "answer_source": "text"})
+        assert a.status_code == 200
+    closing = await client.post(f"/interviews/{iv['id']}/next-turn", headers=ctx["hs"])  # last score still in flight
+    assert closing.status_code == 200 and closing.json() is None
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(Interview, iv["id"])).status == "COMPLETED"
+        rows = (await db.scalars(select(InterviewTurn).where(InterviewTurn.interview_id == iv["id"]))).all()
+        assert all(r.rubric_evaluation is not None for r in rows)  # completion waited for the evidence
+        from app.models.applications import Application
+        assert (await db.get(Application, ctx["app"])).status in (ApplicationStatus.UNDER_REVIEW, "UNDER_REVIEW")

@@ -119,14 +119,18 @@ async def load_frozen(db: AsyncSession, attempt: AssessmentAttempt) -> Frozen:
 
 
 def new_layout(fz: Frozen, cfg: dict) -> tuple[dict, dict]:
-    """Per-attempt question order (within each section) and option permutations, from a CSPRNG, persisted once."""
+    """Per-attempt question order and option permutations, from a CSPRNG, persisted once.
+
+    Sections are per skill (often one question each), so shuffling inside a section would never change anything: with
+    randomization on, ALL questions are shuffled together (`_flat`); off, the authored order is kept. Attempts created before
+    this rule store per-section orders, which `ordered_ids` still reads."""
     rng = secrets.SystemRandom()
-    qorder, oorder = {}, {}
-    for sec in fz.sections:
-        ids = list(sec["aq_ids"])
-        if cfg.get("randomize_questions"):
-            rng.shuffle(ids)
-        qorder[str(sec["id"])] = [str(i) for i in ids]
+    authored = [aq for sec in fz.sections for aq in sec["aq_ids"]]
+    flat = list(authored)
+    if cfg.get("randomize_questions"):
+        rng.shuffle(flat)
+    qorder = {"_flat": [str(i) for i in flat]}
+    oorder = {}
     for aq_id, q in fz.by_aq.items():
         if q.question_type == "MCQ" and q.options:
             perm = list(range(len(q.options)))
@@ -134,6 +138,17 @@ def new_layout(fz: Frozen, cfg: dict) -> tuple[dict, dict]:
                 rng.shuffle(perm)
             oorder[str(aq_id)] = perm
     return qorder, oorder
+
+
+def ordered_ids(attempt: AssessmentAttempt, fz: Frozen) -> list[uuid.UUID]:
+    """The attempt's question order (flat, or legacy per-section), falling back to authored order."""
+    qo = attempt.question_order or {}
+    if "_flat" in qo:
+        return [uuid.UUID(str(i)) for i in qo["_flat"]]
+    out: list[uuid.UUID] = []
+    for sec in fz.sections:
+        out += [uuid.UUID(str(i)) for i in (qo.get(str(sec["id"])) or sec["aq_ids"])]
+    return out
 
 
 def to_original(attempt: AssessmentAttempt, aq_id, displayed: int | None) -> int | None:

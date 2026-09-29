@@ -15,11 +15,13 @@ export function ProctoringPanel({ applicationId }: { applicationId: string }) {
   const [open, setOpen] = useState<string | null>(null);
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorBox error={q.error} />;
-  const sessions: any[] = q.data.sessions ?? [];
+  const all: any[] = q.data.sessions ?? [];
+  const sessions = all.filter((s) => s.consent_at); // sessions opened but never consented carry no events
+  const skipped = all.length - sessions.length;
   if (!sessions.length) return <Empty>No proctored sessions for this application.</Empty>;
   return (
     <div className="space-y-3 text-sm" data-testid="proctoring-panel">
-      <p className="text-xs text-gray-500">{q.data.note}</p>
+      <p className="text-xs text-gray-500">{q.data.note}{skipped > 0 ? ` (${skipped} setup screen${skipped > 1 ? "s" : ""} opened without consent, not shown.)` : ""}</p>
       {sessions.map((s) => {
         const c = Object.fromEntries(COUNT_KEYS.map((k) => [k, s.summary[k] ?? 0]));
         return (

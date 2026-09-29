@@ -49,6 +49,14 @@ export default function ProfilePage() {
   return (
     <div className="max-w-4xl space-y-5">
       <h1 className="text-lg font-semibold">Profile</h1>
+      {full.data?.institution && (
+        <Card title="Your institution">
+          <p className="text-sm" data-testid="institution-card">{full.data.institution.name}
+            {full.data.institution.cohort ? ` · ${full.data.institution.cohort}` : ""}
+            {full.data.institution.graduation_year ? ` · class of ${full.data.institution.graduation_year}` : ""}</p>
+          <p className="text-xs text-gray-500">Your placement office can see your applications, assessments and interview results. Your password is yours alone.</p>
+        </Card>
+      )}
       <Card title="About">
         <div className="grid grid-cols-2 gap-2">
           <input className={inputCls} placeholder="Headline" value={basics.headline} onChange={(e) => setBasics({ ...basics, headline: e.target.value })} />

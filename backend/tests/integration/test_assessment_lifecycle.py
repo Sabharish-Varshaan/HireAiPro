@@ -162,3 +162,65 @@ async def test_bank_changes_after_start_do_not_change_the_attempt_and_double_sub
         assert n == 1
         v = await db.get(AssessmentVersion, att.version_id)
         assert v.content_hash and v.version_no == 1
+
+
+@pytest.mark.asyncio
+async def test_written_answers_are_scored_concurrently_on_submit(client, monkeypatch):
+    """Submit used to score written answers one after another (~4 s each in the browser E2E: a 16.6 s submit)."""
+    import asyncio
+    import time
+
+    from app.api.v1 import assessments as api
+    from app.models.assessments import AssessmentQuestion, AssessmentSection
+    from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, Visibility
+    from app.schemas.rubric import RubricEvaluation
+    from tests.factories import skill
+
+    async with AsyncSessionLocal() as db:
+        org, rec, _ = await make_company(db, "ConcCo")
+        job = await make_job(db, org, rec, [("Python", "required", 0.6, 1.0)])
+        st, _, hs = await make_student(db)
+        app_ = await make_application(db, job, st)
+        py = await skill(db, "Python")
+        a = Assessment(job_id=job.id, title="t", status="PUBLISHED")
+        db.add(a)
+        await db.flush()
+        sec = AssessmentSection(assessment_id=a.id, title="s", order_index=0)
+        db.add(sec)
+        await db.flush()
+        aqs = []
+        for i in range(4):
+            q = Question(question_text=f"Explain concept number {i} in enough detail to be assessed.", question_type=QuestionType.TECHNICAL, skill_id=py.id,
+                         difficulty="medium", source_type=QuestionSourceType.COMPANY_PRIVATE, organization_id=org.id, visibility=Visibility.COMPANY_PRIVATE,
+                         status=QuestionStatus.APPROVED, expected_concepts=["a", "b"], rubric={"criteria": ["a"]})
+            db.add(q)
+            await db.flush()
+            aq = AssessmentQuestion(assessment_id=a.id, section_id=sec.id, question_id=q.id, order_index=i)
+            db.add(aq)
+            aqs.append(aq)
+        await db.commit()
+
+    calls = []
+
+    class FakeGW:
+        model = "fake"
+
+        async def evaluate_rubric(self, text, rubric, schema, **kw):
+            calls.append(time.perf_counter())
+            await asyncio.sleep(0.6)
+            return RubricEvaluation(concept_accuracy=0.7, reasoning=0.7, completeness=0.7, communication=0.7,
+                                    demonstrated_concepts=[], missing_concepts=[], evaluator_confidence=0.9)
+    monkeypatch.setattr(api, "get_ai_gateway", lambda: FakeGW())
+    att = (await client.post(f"/assessments/{a.id}/attempts", headers=hs, json={"application_id": str(app_.id)})).json()
+    for aq in aqs:
+        await client.put(f"/assessments/attempts/{att['id']}/answers", headers=hs, json={"assessment_question_id": str(aq.id), "answer_text": "A reasonably long answer. " * 5})
+    t = time.perf_counter()
+    r = await client.post(f"/assessments/attempts/{att['id']}/submit", headers=hs)
+    took = time.perf_counter() - t
+    assert r.status_code == 200 and len(calls) == 4
+    assert took < 1.8, took  # sequential would be >= 2.4 s
+    assert max(calls) - min(calls) < 0.3  # the four scoring calls overlapped
+    async with AsyncSessionLocal() as db:
+        from app.models.assessments import AssessmentAnswer
+        rows = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == att["id"]))).all()
+        assert all(x.rubric_evaluation is not None and x.score is not None for x in rows)

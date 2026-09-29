@@ -97,3 +97,11 @@ equals the dev `VALKEY_URL`, and flushes db 10 at start. A running dev worker ne
 ## Proctoring locally
 Proctoring is enforced by default (`PROCTOR_ENFORCE=true`). Use a regular Chrome/Safari window: the
 system check needs camera, microphone and fullscreen permission. See [PROCTORING.md](PROCTORING.md).
+
+## Accounts in development
+No mail provider is connected. Invitation and reset links are written to `email_outbox` (only when `APP_ENV` is `development` or `demo`) and listed at
+http://localhost:5173/dev/outbox. Sign up as a Placement Officer or Recruiter at `/signup`; students are invited from the officer's Students page.
+Platform admin: `python -m app.cli create-admin`. After a migration run `alembic upgrade head` (dev) and
+`DATABASE_URL=postgresql+asyncpg://hireai:hireai@localhost:5435/hireai_test alembic upgrade head` (tests).
+Restart the API and the Celery worker after code changes (no auto-reload). The interview pool and assessments are prepared by the worker.
+Latency traces: start a second API with `PROCTOR_ENFORCE=false` and run `scripts/interview_trace.py` (see INTERVIEW_LATENCY.md).

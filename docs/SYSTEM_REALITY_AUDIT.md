@@ -166,3 +166,16 @@ SSO (`auth_provider`, `external_subject`), transactional email provider, ATS/LMS
 7. Fresh full browser E2E, auth E2E, latency E2E, docs (`FULL_DATAFLOW.md`, `PORTAL_UX_AUDIT.md`, `INDUSTRY_WORKFLOW_COMPARISON.md`).
 
 This is several days of work at production quality; it should land as separate reviewed commits per step, not one.
+
+## 8. Resolution status (after the three-role pass, 2026-09-29)
+Sections 2-6 above describe the audited baseline and are kept as findings. What changed:
+| Gap | Status | Where |
+|---|---|---|
+| P0-1 account ownership: open Institution-Admin signup, no invitations/reset | **Fixed for the active roles**: Placement Officer/Recruiter signup creates institution/company; hashed single-use invitations; password reset; dev outbox. Email ownership of self-signups is still unverified | docs/ACCOUNTS.md |
+| P0-2 no server timer | **Fixed**: `started_at/expires_at/submitted_at`, expiry enforced on writes, auto-finalize | docs/FULL_DATAFLOW.md §10 |
+| P0-3 mutable assessments | **Fixed**: `assessment_versions` frozen at publish | §9 |
+| P0-4 coding depth / Run vs Submit | **Fixed**: 2-3 samples + 6-12 hidden verified tests, Run and Submit | §12 |
+| P0-5 interview dead air | **Fixed**: template + pool, question 1 ~0.2 s; gap now bounded by scoring | docs/INTERVIEW_LATENCY.md |
+| P0-6 staff permissions | **Deferred** with Faculty/Department Head (Institution Admin, Faculty, Department Head are not offered) | §0 |
+| P1 items | Student import, invitations, randomization (now whole-assessment), MCQ navigator, blueprint size + delivery options, campus opportunities, interview prefetch, system check: **done**. Company invitations, per-type blueprint editor, screen-share: **not done** | docs/INDUSTRY_WORKFLOW_COMPARISON.md |
+Defects found by the browser E2E and fixed in this pass: blueprint produced zero MCQs; question shuffle was a no-op for one-question sections; closing `next-turn` returned 500 while a score was in flight; empty proctoring sessions on every page load; 16.6 s assessment submit (sequential scoring).

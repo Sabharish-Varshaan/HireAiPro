@@ -42,3 +42,9 @@ completion. Visible to the hiring company, the enrolled institution and admins; 
 ## Student view of evaluations
 Students receive qualitative results only; see [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md). The `/me/data`
 export contains bands, not levels or scores.
+
+## Accounts and invitations
+Invitation and reset tokens are 256-bit random values; only their SHA-256 is stored, each is single-use and expires (72 h / 60 min). Passwords are argon2 hashes
+that only the account owner ever sets: a placement officer invites students but never sets, sees or resets a password. Disabling a student removes the
+institution membership (roster, analytics, eligibility) and leaves their own account untouched. Placement officers see their institution's students'
+assessment and interview results and proctoring events, never a company's private question bank or recruiter notes.

@@ -71,3 +71,10 @@ See `docs/DATA_FLOW.md` for the JD → assessment → evidence → match pipelin
 - Student responses are separate DTOs (`app/schemas/student_views.py`); reviewer access is resource-level
   (`assert_can_view_application`). See [SCORE_VISIBILITY.md](SCORE_VISIBILITY.md).
 - Interview questions are spoken by the browser (`speechSynthesis`); no server audio.
+
+## Accounts, campus flow, assessment lifecycle, interview pool
+- `services/accounts` (hashed invitations, reset, dev outbox), `services/institutions/students.py` (invite/import), `api/v1/opportunities.py` + `services/jobs/visibility.py`
+  (approval and deterministic eligibility).
+- `services/assessments/versioning.py`: frozen `assessment_versions`, per-attempt layout, server clock; grading and coding read the frozen content.
+- `services/interviews/pool.py`: template + validated pool prepared at publish; candidate path is a database lookup; budgeted scoring in `api/v1/interviews.py`.
+See [FULL_DATAFLOW.md](FULL_DATAFLOW.md).

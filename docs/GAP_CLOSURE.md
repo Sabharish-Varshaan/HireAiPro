@@ -89,3 +89,17 @@ column is updated as each gap closes.
 | Spoken interview questions (speechSynthesis, Replay, Mute) | DONE | browser E2E: autoplay once, Replay +0 ai_runs, Mute persisted, cancel on submit |
 | Real-device proctoring pass | NOT TESTED | in-app browser blocks camera/mic; run in Chrome |
 | Login page crashed on 422 validation errors | FIXED | found in E2E; now uses `apiError` |
+
+## Pass 5: accounts, campus workflow, assessment lifecycle, interview latency (2026-09-29)
+| Item | Status | Evidence |
+|---|---|---|
+| Three-role signup; no admin/institution-admin self-signup | DONE | `test_accounts.py`; E2E |
+| Hashed single-use expiring invitations, claim, reset, dev outbox | DONE | tests + E2E (invalid, reuse, wrong password, reset reuse rejected) |
+| Student CSV preview/import, invite, resend, disable | DONE | `test_student_import.py`; E2E with row-level errors |
+| Company -> officer approval -> eligible students | DONE | `test_opportunities.py`; E2E incl. outsider 404 |
+| Frozen versions, server timer, refresh-safe, whole-assessment shuffle, mark/navigator | DONE | tests; E2E (timer 22:48 -> 22:29 after 19 s refresh; order identical after refresh) |
+| Coding depth + Run/Submit | DONE | 3/3 live generations accepted (11-12 tests); E2E Python and JavaScript |
+| Interview pool, question 1 immediate, next question bounded | DONE | traces: gap p50 16.5 s -> 2.8 s; browser Start -> question 163 ms |
+| Blueprint had zero MCQs; shuffle no-op; closing next-turn 500; 16.6 s submit | FIXED | found by the E2E; regression tests |
+| Screen share, company invitations, editable blueprint, staff roles, SSO, email provider | NOT DONE | see INDUSTRY_WORKFLOW_COMPARISON.md |
+| Real-device proctoring | NOT TESTED | E2E used AUTOMATED DEVICE SIMULATION |

@@ -56,6 +56,12 @@ cd backend
 .venv/bin/python scripts/e2e_full_scenario.py   # fresh E2E + provider/cost report
 ```
 
+## Roles, accounts and campus flow
+Active roles: **Placement Officer** (signs up with an institution, manages departments/cohorts, invites or imports students, approves company opportunities, sees readiness and
+results), **Company/Recruiter** (signs up with a company, creates jobs and assessments, targets open market or an institution, reviews candidates) and **Student**
+(invited: claims the account and chooses their own password). No default or shared passwords exist. See [docs/ACCOUNTS.md](docs/ACCOUNTS.md),
+[docs/FULL_DATAFLOW.md](docs/FULL_DATAFLOW.md), [docs/SYSTEM_REALITY_AUDIT.md](docs/SYSTEM_REALITY_AUDIT.md), [docs/INTERVIEW_LATENCY.md](docs/INTERVIEW_LATENCY.md).
+
 ## Proctoring, privacy and voice
 Assessments and interviews run behind a consented system check and objective proctoring (events only,
 no recording, no cheating score) — [docs/PROCTORING.md](docs/PROCTORING.md). Students never receive

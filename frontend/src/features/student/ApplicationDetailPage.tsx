@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Badge, Button, Card, Empty, ErrorBox, Loading } from "../../components/ui";
+import { Badge, Card, Empty, ErrorBox, Loading } from "../../components/ui";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
 import { ProctoredGate } from "../proctoring/ProctoredGate";
@@ -58,6 +58,7 @@ export default function ApplicationDetailPage() {
 
       <Card title="Assessment">
         {!assessment.data ? <Empty>No published assessment for this job.</Empty> :
+          attemptQ.isLoading ? <Loading /> :  // never mount the proctoring gate before we know whether the assessment is already done
           assessmentDone ? <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!} onSubmitted={refreshAll} /> :
           <ProctoredGate applicationId={applicationId!} kind="ASSESSMENT">
             {(complete) => <AssessmentRunner assessmentId={assessment.data.id} applicationId={applicationId!}
@@ -67,7 +68,7 @@ export default function ApplicationDetailPage() {
 
       <Card title="Interview" actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}>
         {!interviewAllowed && <Empty>Available after you submit the assessment.</Empty>}
-        {interviewAllowed && (interviewDone ? <p className="text-sm font-medium">Interview completed</p> : (
+        {interviewAllowed && (interview.isLoading ? <Loading /> : interviewDone ? <p className="text-sm font-medium">Interview completed</p> : (
           <ProctoredGate applicationId={applicationId!} kind="INTERVIEW"
             preparing={interview.data ? undefined : { ready: poolReady, label: "Preparing your interview questions" }}>
             {(complete, stream) => !interview.data ? (
