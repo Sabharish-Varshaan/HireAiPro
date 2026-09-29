@@ -23,10 +23,21 @@ router = APIRouter(prefix="/question-imports", tags=["question-imports"])
 RECRUITER_ROLES = (UserRole.COMPANY_ADMIN, UserRole.RECRUITER, UserRole.HIRING_MANAGER)
 
 
-async def _job_ctx(db: AsyncSession, user: User, job_id: uuid.UUID):
+DOMAIN_STAGE = {"APTITUDE": "APTITUDE_ASSESSMENT", "TECHNICAL": "TECHNICAL_ASSESSMENT"}
+
+
+async def _job_ctx(db: AsyncSession, user: User, job_id: uuid.UUID, domain: str = "TECHNICAL"):
     job = await get_job_for_member(db, user, job_id)  # 404/403 unless the caller's company owns the job
     org = await db.get(Organization, job.organization_id)
-    assessment = await db.scalar(select(Assessment).where(Assessment.job_id == job.id).order_by(Assessment.created_at.desc()))
+    stage_type = DOMAIN_STAGE.get(domain)
+    q = select(Assessment).where(Assessment.job_id == job.id)
+    if stage_type == "TECHNICAL_ASSESSMENT":  # the classic assessment: staged technical, or the legacy un-staged one
+        q = q.where(Assessment.stage_type.in_(["TECHNICAL_ASSESSMENT"]) | Assessment.stage_type.is_(None))
+    elif stage_type:
+        q = q.where(Assessment.stage_type == stage_type)
+    else:
+        q = q.where(Assessment.id.is_(None))  # interview domains have no assessment
+    assessment = await db.scalar(q.order_by(Assessment.created_at.desc()))
     return job, org, assessment
 
 
@@ -47,9 +58,13 @@ def _out(b: QuestionImportBatch, with_rows: bool = True) -> dict:
 
 
 @router.get("/template")
-async def template(job_id: uuid.UUID, format: str = "xlsx", user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
-    job, org, assessment = await _job_ctx(db, user, job_id)
-    meta = ci.build_metadata(org=org, job=job, assessment=assessment)
+async def template(job_id: uuid.UUID, format: str = "xlsx", domain: str = "TECHNICAL", user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                   db: AsyncSession = Depends(get_db)):
+    domain = domain.upper()
+    if domain not in ci.DOMAINS:
+        raise HTTPException(422, f"domain must be one of {', '.join(ci.DOMAINS)}")
+    job, org, assessment = await _job_ctx(db, user, job_id, domain)
+    meta = ci.build_metadata(org=org, job=job, assessment=assessment, domain=domain)
     if format == "xlsx":
         body, mime, ext = ci.build_xlsx(meta), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
     elif format == "csv":
@@ -62,9 +77,10 @@ async def template(job_id: uuid.UUID, format: str = "xlsx", user: User = Depends
 
 
 @router.post("")
-async def upload(job_id: uuid.UUID, file: UploadFile = File(...), user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
+async def upload(job_id: uuid.UUID, domain: str = "TECHNICAL", file: UploadFile = File(...), user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                 db: AsyncSession = Depends(get_db)):
     """Parse + validate into a PREVIEW batch. Nothing is a question yet."""
-    job, org, assessment = await _job_ctx(db, user, job_id)
+    job, org, assessment = await _job_ctx(db, user, job_id, domain.upper() if domain.upper() in ci.DOMAINS else "TECHNICAL")
     try:
         rows, meta, fmt = ci.parse_upload(await file.read(ci.MAX_BYTES + 1), file.filename or "")
     except ci.ImportFileError as exc:
@@ -83,8 +99,16 @@ async def upload(job_id: uuid.UUID, file: UploadFile = File(...), user: User = D
 
 
 @router.get("/coverage")
-async def coverage(job_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
-    job, org, assessment = await _job_ctx(db, user, job_id)
+async def coverage(job_id: uuid.UUID, domain: str = "TECHNICAL", user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
+    domain = domain.upper()
+    job, org, assessment = await _job_ctx(db, user, job_id, domain)
+    if domain == "APTITUDE":
+        from app.services.pipeline import service as pl
+        from app.services.pipeline import stages as S
+
+        await pl.ensure_pipeline(db, job)
+        stage = await pl.stage_by_type(db, job.id, S.APTITUDE)
+        return await ci.aptitude_coverage(db, org.id, stage) if stage else {"rows": [], "needed": 0, "covered": 0, "gap": 0}
     return await ci.coverage_for_job(db, org.id, job, assessment)
 
 

@@ -28,11 +28,16 @@ from app.services.ai_gateway.vector_store import TenantScope
 from app.services.questions.validator import content_hash, index_question, validate_semantics, validate_structure
 from app.services.skills.normalizer import normalize_skill_name
 
-TEMPLATE_VERSION = "company-questions-v1"
+TEMPLATE_VERSION = "company-questions-v2"
 MAX_ROWS = 500
 MAX_BYTES = 2_000_000
 COLUMNS = ["external_question_id", "question_type", "skill", "difficulty", "question_text", "option_a", "option_b", "option_c", "option_d", "option_e",
-           "correct_option", "explanation", "technical_rubric", "expected_concepts", "max_score", "tags", "time_limit_seconds", "required"]
+           "correct_option", "explanation", "technical_rubric", "expected_concepts", "max_score", "tags", "time_limit_seconds", "required",
+           "assessment_domain", "category", "sub_category"]
+# Question domains this pipeline can import. Aptitude and HR questions are classified by category (no technical skill).
+DOMAINS = ("TECHNICAL", "APTITUDE", "TECHNICAL_INTERVIEW", "HR_INTERVIEW")
+SKILL_DOMAINS = ("TECHNICAL", "TECHNICAL_INTERVIEW")
+DOMAIN_LABELS = {"TECHNICAL": "Technical assessment", "APTITUDE": "Aptitude assessment", "TECHNICAL_INTERVIEW": "Technical interview", "HR_INTERVIEW": "HR interview"}
 REQUIRED_MCQ = ["skill", "difficulty", "question_text", "option_a", "option_b", "correct_option"]
 REQUIRED_TECH = ["external_question_id", "skill", "difficulty", "question_text", "technical_rubric"]
 LETTERS = "ABCDE"
@@ -46,8 +51,25 @@ class ImportFileError(ValueError):
 
 
 # ---------------------------------------------------------------- templates
-def _instructions() -> list[list[str]]:
+def _domain_instructions(domain: str) -> list[list[str]]:
+    from app.services.pipeline import stages as S
+
+    if domain == "APTITUDE":
+        return [["Aptitude template: assessment_domain = APTITUDE. question_type = MCQ only. Use `category` (not skill): " + ", ".join(S.APTITUDE_CATEGORIES) + "."],
+                ["Required: category, difficulty, question_text, option_a, option_b, correct_option. Optional: sub_category, explanation. Leave `skill` empty."],
+                ["Example:  MCQ | (no skill) | medium | A train covers 120 km in 2 hours. What is its speed? | 50 | 60 | 70 | 80 | | B | category = Quantitative Aptitude"]]
+    if domain == "HR_INTERVIEW":
+        return [["HR interview template: assessment_domain = HR_INTERVIEW. question_type = TECHNICAL_WRITTEN (an open question). Use `category`: " + ", ".join(S.HR_CATEGORIES) + "."],
+                ["Required: category, question_text. No skill, options or rubric. Questions about protected or sensitive topics (religion, family plans, health, age ...) are rejected."]]
+    if domain == "TECHNICAL_INTERVIEW":
+        return [["Technical interview template: assessment_domain = TECHNICAL_INTERVIEW. question_type = TECHNICAL_WRITTEN with skill, difficulty, question_text, technical_rubric."]]
+    return [["Technical template: assessment_domain = TECHNICAL (or empty). MCQ or TECHNICAL_WRITTEN with a skill. Coding problems cannot be imported."]]
+
+
+def _instructions(domain: str = "TECHNICAL") -> list[list[str]]:
     return [
+        *_domain_instructions(domain),
+        [""],
         ["HireAiPro company question template"],
         [""],
         ["Add one question per row on the 'Questions' sheet. Do not rename or reorder the columns. Do not edit the 'Metadata' sheet."],
@@ -63,8 +85,8 @@ def _instructions() -> list[list[str]]:
     ]
 
 
-def build_metadata(*, org, job, assessment) -> dict:
-    return {"template_version": TEMPLATE_VERSION, "template_id": str(uuid.uuid4()), "company_id": str(org.id), "company_name": org.name,
+def build_metadata(*, org, job, assessment, domain: str = "TECHNICAL") -> dict:
+    return {"template_version": TEMPLATE_VERSION, "assessment_domain": domain, "template_id": str(uuid.uuid4()), "company_id": str(org.id), "company_name": org.name,
             "job_id": str(job.id), "job_title": job.title, "assessment_id": str(assessment.id) if assessment else "",
             "assessment_name": assessment.title if assessment else "", "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
 
@@ -73,7 +95,7 @@ def build_xlsx(meta: dict) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Instructions"
-    for row in _instructions():
+    for row in _instructions(meta.get("assessment_domain", "TECHNICAL")):
         ws.append(row)
     ws["A1"].font = Font(bold=True, size=14)
     ws.column_dimensions["A"].width = 130
@@ -83,9 +105,16 @@ def build_xlsx(meta: dict) -> bytes:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="1F2937")
     q.freeze_panes = "A2"
-    for col, w in zip("ABCDEFGHIJKLMNOPQR", (18, 18, 20, 12, 60, 28, 28, 28, 28, 28, 14, 30, 40, 30, 10, 20, 12, 10)):
+    for col, w in zip("ABCDEFGHIJKLMNOPQRSTU", (18, 18, 20, 12, 60, 28, 28, 28, 28, 28, 14, 30, 40, 30, 10, 20, 12, 10, 20, 24, 20)):
         q.column_dimensions[col].width = w
-    for col, values in (("B", '"MCQ,TECHNICAL_WRITTEN"'), ("D", '"easy,medium,hard"'), ("K", '"A,B,C,D,E"'), ("R", '"yes,no"')):
+    dom = meta.get("assessment_domain", "TECHNICAL")
+    if dom == "APTITUDE":
+        q.append(["", "MCQ", "", "medium", "EXAMPLE (delete this row): A train covers 120 km in 2 hours. What is its average speed in km/h?", "50", "60", "70", "80", "", "B",
+                  "120 / 2 = 60", "", "", "", "", "", "", "APTITUDE", "Quantitative Aptitude", "Speed and distance"])
+    elif dom == "HR_INTERVIEW":
+        q.append(["", "TECHNICAL_WRITTEN", "", "", "EXAMPLE (delete this row): Tell me about a time you explained a complex idea to someone new to it.", "", "", "", "", "", "", "", "", "", "", "", "", "",
+                  "HR_INTERVIEW", "communication", ""])
+    for col, values in (("B", '"MCQ,TECHNICAL_WRITTEN"'), ("D", '"easy,medium,hard"'), ("K", '"A,B,C,D,E"'), ("R", '"yes,no"'), ("S", '"TECHNICAL,APTITUDE,TECHNICAL_INTERVIEW,HR_INTERVIEW"')):
         dv = DataValidation(type="list", formula1=values, allow_blank=True)
         q.add_data_validation(dv)
         dv.add(f"{col}2:{col}{MAX_ROWS + 1}")
@@ -109,6 +138,17 @@ def build_csv(meta: dict) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
+def _example_rows(domain: str) -> list[dict]:
+    if domain == "APTITUDE":
+        return [{"question_type": "MCQ", "assessment_domain": "APTITUDE", "category": "Quantitative Aptitude", "sub_category": "Speed and distance", "difficulty": "medium",
+                 "question_text": "A train covers 120 km in 2 hours. What is its average speed in km/h?", "options": {"a": "50", "b": "60", "c": "70", "d": "80"},
+                 "correct_option": "B", "explanation": "120 / 2 = 60"}]
+    if domain == "HR_INTERVIEW":
+        return [{"question_type": "TECHNICAL_WRITTEN", "assessment_domain": "HR_INTERVIEW", "category": "communication",
+                 "question_text": "Tell me about a time you explained a complex idea to someone new to it."}]
+    return []
+
+
 def build_json(meta: dict) -> bytes:
     example_mcq = {"external_question_id": "EX-1", "question_type": "MCQ", "skill": "Python", "difficulty": "medium",
                    "question_text": "Which keyword defines a generator function?", "options": {"a": "return", "b": "yield", "c": "emit"}, "correct_option": "B",
@@ -117,7 +157,7 @@ def build_json(meta: dict) -> bytes:
                     "question_text": "Explain when the planner chooses a B-tree index scan over a sequential scan.",
                     "technical_rubric": ["selectivity and statistics", "cost estimates", "index-only scans"], "expected_concepts": ["selectivity", "statistics"], "max_score": 5}
     doc = {"metadata": meta, "instructions": "Replace the examples. correct_option is a letter A-E matching a filled option. Coding questions are not supported.",
-           "questions": [example_mcq, example_tech]}
+           "questions": _example_rows(meta.get("assessment_domain", "TECHNICAL")) or [example_mcq, example_tech]}
     return json.dumps(doc, indent=2).encode("utf-8")
 
 
@@ -201,6 +241,9 @@ def parse_upload(raw: bytes, filename: str) -> tuple[list[dict], dict, str]:
     missing_cols = {"question_text", "skill"} - {k for r in rows for k in r}
     if missing_cols:
         raise ImportFileError(f"Missing required column(s): {', '.join(sorted(missing_cols))}")
+    rows = [r for r in rows if not _cell(r.get("question_text")).upper().startswith("EXAMPLE (DELETE THIS ROW)")]  # template sample rows are never imported
+    if not rows:
+        raise ImportFileError("The file has no question rows")
     return [_row_from_flat(r) for r in rows], meta, fmt
 
 
@@ -221,6 +264,13 @@ class RowResult:
     concepts: list[str] | None = None
     duplicate_of: dict | None = None
     excluded: bool = False
+    domain: str = "TECHNICAL"
+    category: str | None = None
+    sub_category: str | None = None
+
+    @property
+    def needs_skill(self) -> bool:
+        return self.domain in SKILL_DOMAINS
 
     def bad(self, msg: str, level: str = "error") -> None:
         self.issues.append({"level": level, "message": msg})
@@ -229,7 +279,7 @@ class RowResult:
         return {"row": self.row, "status": self.status, "issues": self.issues, "raw": self.raw, "question_type": self.question_type,
                 "skill_id": self.skill_id, "canonical_skill": self.canonical_skill, "difficulty": self.difficulty, "options": self.options,
                 "correct_index": self.correct_index, "criteria": self.criteria, "concepts": self.concepts, "duplicate_of": self.duplicate_of,
-                "excluded": self.excluded}
+                "excluded": self.excluded, "domain": self.domain, "category": self.category, "sub_category": self.sub_category}
 
 
 def _split(s: str) -> list[str]:
@@ -246,15 +296,53 @@ def _norm_text(t: str) -> str:
 
 def check_structure(r: RowResult) -> None:
     """Schema-level validation of one row (no database)."""
+    from app.services.interviews.hr_safety import is_safe_question, sensitive_hits
+    from app.services.pipeline import stages as S
+
     raw = r.raw
+    dom = (raw.get("assessment_domain") or "TECHNICAL").strip().upper().replace(" ", "_")
+    if dom not in DOMAINS:
+        r.bad(f"assessment_domain must be one of {', '.join(DOMAINS)}")
+        return
+    r.domain, r.category, r.sub_category = dom, (raw.get("category") or "").strip() or None, (raw.get("sub_category") or "").strip() or None
     qt = TYPE_ALIASES.get(re.sub(r"[\s-]+", "_", raw["question_type"].strip().upper()))
     if qt is None:
         r.bad("question_type must be MCQ or TECHNICAL_WRITTEN" + (" (coding questions cannot be imported)" if raw["question_type"].strip().upper() == "CODING" else ""))
         return
     r.question_type = qt
-    for col in (REQUIRED_MCQ if qt == "MCQ" else REQUIRED_TECH):
-        if not raw[col]:
-            r.bad(f"{col} is required")
+    if dom == "APTITUDE":
+        if qt != "MCQ":
+            r.bad("Aptitude questions must be MCQ")
+        for col in ("difficulty", "question_text", "option_a", "option_b", "correct_option"):
+            if not raw[col]:
+                r.bad(f"{col} is required")
+        if not r.category:
+            r.bad("category is required for aptitude questions")
+        else:
+            match = next((c for c in S.APTITUDE_CATEGORIES if c.lower() == r.category.lower()), None)
+            r.category = match or r.category[:40]
+            if match is None:
+                r.bad(f"'{r.category}' is not a standard aptitude category (kept as written)", "warning")
+        if raw["skill"]:
+            r.bad("skill is ignored for aptitude questions (they use category)", "warning")
+    elif dom == "HR_INTERVIEW":
+        if not raw["question_text"]:
+            r.bad("question_text is required")
+        cat = next((c for c in S.HR_CATEGORIES if c == (r.category or "").lower()), None)
+        if cat is None:
+            r.bad(f"category must be one of: {', '.join(S.HR_CATEGORIES)}")
+        else:
+            r.category = cat
+        if raw["question_text"] and not is_safe_question(raw["question_text"]):
+            hits = sensitive_hits(raw["question_text"])
+            r.bad("This question touches a protected or sensitive topic" + (f" ({', '.join(hits)})" if hits else "") + " and cannot be used in an HR interview")
+        r.difficulty = "medium"
+        r.options, r.criteria, r.concepts = None, None, None
+        return
+    else:
+        for col in (REQUIRED_MCQ if qt == "MCQ" else REQUIRED_TECH):
+            if not raw[col]:
+                r.bad(f"{col} is required")
     d = raw["difficulty"].strip().lower()
     if d and d not in DIFFICULTIES:
         r.bad("difficulty must be easy, medium or hard")
@@ -301,7 +389,7 @@ def finalize_status(r: RowResult) -> None:
         r.status = "INVALID"
     elif r.duplicate_of:
         r.status = "DUPLICATE"
-    elif r.skill_id is None:
+    elif r.skill_id is None and r.needs_skill:
         r.status = "NEEDS_SKILL_MAPPING"
     elif "warning" in levels:
         r.status = "WARNING"
@@ -329,7 +417,7 @@ async def validate_rows(db: AsyncSession, org_id: uuid.UUID, raw_rows: list[dict
     scope = TenantScope(organization_id=org_id)
     for r in results:
         check_structure(r)
-        if r.raw["skill"]:
+        if r.raw["skill"] and r.needs_skill:
             sid, _ = await normalize_skill_name(db, r.raw["skill"])
             if sid is not None:
                 skill = await db.get(Skill, sid)
@@ -404,16 +492,19 @@ async def confirm_batch(db: AsyncSession, batch: QuestionImportBatch, user_id: u
             meta["max_score"] = ms if ms and 0 < ms <= 100 else None
         except ValueError:
             pass
-        q = Question(question_text=raw["question_text"].strip(), question_type=qtype, skill_id=uuid.UUID(r["skill_id"]), difficulty=r["difficulty"],
+        dom = r.get("domain") or "TECHNICAL"
+        q = Question(question_text=raw["question_text"].strip(), question_type=qtype, skill_id=uuid.UUID(r["skill_id"]) if r.get("skill_id") else None, difficulty=r["difficulty"],
+                     domain=dom, category=r.get("category"), sub_category=r.get("sub_category"),
                      options=r["options"] if qtype == QuestionType.MCQ else None, correct_option_index=r["correct_index"] if qtype == QuestionType.MCQ else None,
-                     expected_concepts=r["concepts"] if qtype == QuestionType.TECHNICAL else None,
-                     rubric={"criteria": r["criteria"], "version": "rubric_v1", "imported": True} if qtype == QuestionType.TECHNICAL else None,
+                     expected_concepts=r["concepts"] if (qtype == QuestionType.TECHNICAL and dom != "HR_INTERVIEW") else None,
+                     rubric={"criteria": r["criteria"], "version": "rubric_v1", "imported": True} if (qtype == QuestionType.TECHNICAL and dom != "HR_INTERVIEW") else None,
                      source_type=QuestionSourceType.COMPANY_PRIVATE, organization_id=batch.organization_id, visibility=Visibility.COMPANY_PRIVATE,
                      status=QS.VALIDATED, content_hash=h, created_by_user_id=user_id, provenance="COMPANY_IMPORT", import_batch_id=batch.id,
                      import_meta=meta, validation_report={"ok": True, "checks": {"import_validated": True}, "reasons": [i["message"] for i in r["issues"]]})
         db.add(q)
         await db.flush()
-        await asyncio.to_thread(index_question, q)  # tenant-scoped point (organization_id in the payload)
+        if q.skill_id is not None:  # skill-less (aptitude / HR) questions are de-duplicated by content hash; they have no skill to index under
+            await asyncio.to_thread(index_question, q)  # tenant-scoped point (organization_id in the payload)
         known[h] = {"question_id": str(q.id), "where": "your question bank"}
         created.append(q)
     batch.status, batch.imported_rows = "CONFIRMED", len(created)
@@ -455,3 +546,28 @@ async def coverage_for_job(db: AsyncSession, org_id: uuid.UUID, job, assessment)
             rows.append({"skill": names.get(str(a.skill_id), a.skill_name), "type": qt, "needed": need, "available_private": own, "available_platform": plat, "selected": min(sel, need) if sel else 0})
     return {"rows": rows, "needed": needed_total, "covered": covered_total, "gap": gap_total,
             "coverage_percentage": round(100 * covered_total / needed_total, 1) if needed_total else None}
+
+
+async def aptitude_coverage(db: AsyncSession, org_id: uuid.UUID, stage) -> dict:
+    """Needed (recruiter's category x difficulty mix) vs available (this company's usable private aptitude questions plus approved platform ones)."""
+    from app.services.pipeline.stage_content import aptitude_slots
+    from app.services.questions.governance import USABLE_OWN_COMPANY, USABLE_PLATFORM
+
+    cfg = stage.config or {}
+    cats = {k: float(v) for k, v in (cfg.get("categories") or {}).items()}
+    if not cats:
+        return {"rows": [], "needed": 0, "covered": 0, "gap": 0}
+    slots = aptitude_slots(int(stage.question_count or 15), cats, cfg.get("difficulty") or {"easy": 30, "medium": 50, "hard": 20})
+    need: dict[str, int] = {}
+    for cat, _ in slots:
+        need[cat] = need.get(cat, 0) + 1
+    rows, covered = [], 0
+    for cat, n in need.items():
+        own = len((await db.scalars(select(Question.id).where(Question.organization_id == org_id, Question.domain == "APTITUDE", Question.category == cat,
+                                                               Question.status.in_([s.value for s in USABLE_OWN_COMPANY])))).all())
+        plat = len((await db.scalars(select(Question.id).where(Question.visibility == Visibility.PLATFORM_PUBLIC, Question.domain == "APTITUDE", Question.category == cat,
+                                                                Question.status.in_([s.value for s in USABLE_PLATFORM])))).all())
+        covered += min(n, own + plat)
+        rows.append({"category": cat, "needed": n, "available_private": own, "available_platform": plat})
+    total = sum(need.values())
+    return {"rows": rows, "needed": total, "covered": covered, "gap": total - covered, "coverage_percentage": round(100 * covered / total, 1) if total else None}

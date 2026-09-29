@@ -40,6 +40,12 @@ class StudentApplicationView(BaseModel):
     job_title: str | None = None
     organization_name: str | None = None
     applied_at: dt.datetime | None = None
+    # The stage the candidate can act on now (exact label, e.g. "Coding Assessment"), and how far along the hiring process is.
+    next_stage: str | None = None
+    next_stage_label: str | None = None
+    next_stage_status: str | None = None
+    stages_total: int | None = None
+    stages_done: int | None = None
 
 
 class StudentAttemptView(BaseModel):

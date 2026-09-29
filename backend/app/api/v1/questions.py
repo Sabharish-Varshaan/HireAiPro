@@ -126,6 +126,8 @@ async def list_questions(
     status: QS | None = None,
     source_type: QuestionSourceType | None = None,
     question_type: QuestionType | None = None,
+    domain: str | None = None,
+    category: str | None = None,
     q: str | None = None,
     limit: int = 200,
     user: User = Depends(require_roles(*RECRUITER_ROLES, ADMIN)),
@@ -144,6 +146,10 @@ async def list_questions(
                      (Question.question_type, question_type)):
         if val is not None:
             stmt = stmt.where(col == (val.value if hasattr(val, "value") else val))
+    if domain:
+        stmt = stmt.where(Question.domain == domain.upper())
+    if category:
+        stmt = stmt.where(Question.category == category)
     if q:
         stmt = stmt.where(Question.question_text.ilike(f"%{q}%"))
     rows = (await db.scalars(stmt.order_by(Question.created_at.desc()).limit(limit))).all()
@@ -155,7 +161,7 @@ async def list_questions(
 async def get_question(question_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES, ADMIN)),
                        db: AsyncSession = Depends(get_db)):
     q = await _visible(db, user, await db.get(Question, question_id))
-    skill = await db.get(Skill, q.skill_id)
+    skill = await db.get(Skill, q.skill_id) if q.skill_id else None
     return QuestionOut.model_validate(q).model_copy(update={"skill_name": skill.canonical_name if skill else None})
 
 
@@ -163,10 +169,11 @@ async def get_question(question_id: uuid.UUID, user: User = Depends(require_role
 async def revalidate(question_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES, ADMIN)),
                      db: AsyncSession = Depends(get_db)):
     q = await _visible(db, user, await db.get(Question, question_id))
-    skill = await db.get(Skill, q.skill_id)
+    skill = await db.get(Skill, q.skill_id) if q.skill_id else None
     r = validate_structure(QuestionType(q.question_type), q.question_text, q.difficulty, q.expected_concepts, q.rubric,
                            q.options, q.correct_option_index, q.test_cases)
-    r = validate_semantics(r, q.question_text, skill.canonical_name, q.skill_id, TenantScope(organization_id=q.organization_id))
+    if skill is not None:  # skill-less (aptitude / HR) questions have no skill to align with; structure and hash checks apply
+        r = validate_semantics(r, q.question_text, skill.canonical_name, q.skill_id, TenantScope(organization_id=q.organization_id))
     if r.duplicate_of == str(q.id):  # a question is never a duplicate of itself
         r.duplicate_of, r.checks["not_duplicate"] = None, True
         r.reasons = [x for x in r.reasons if "near-duplicate" not in x]
@@ -177,7 +184,8 @@ async def revalidate(question_id: uuid.UUID, user: User = Depends(require_roles(
     await audit(db, user, "question_validated", "question", q.id, organization_id=q.organization_id,
                 metadata={"ok": r.ok, "reasons": r.reasons[:5]})
     await db.commit()
-    index_question(q, r.embedding)
+    if q.skill_id is not None:
+        index_question(q, r.embedding)
     return q
 
 

@@ -211,7 +211,8 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
         raise HTTPException(403, "Not your application for this assessment")
     from app.api.v1.proctoring import require_ready_session
 
-    session = await require_ready_session(db, application.id, "ASSESSMENT")
+    stage = await pl.stage_for_assessment(db, assessment)
+    session = await require_ready_session(db, application.id, "ASSESSMENT") if (stage is None or stage.proctored) else None
     existing = await db.scalar(select(AssessmentAttempt).where(
         AssessmentAttempt.assessment_id == assessment_id, AssessmentAttempt.application_id == application.id))
     if existing:
@@ -219,7 +220,8 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
             session.assessment_attempt_id = existing.id
             await db.commit()
         return _student_attempt(existing)
-    stage = await pl.stage_for_assessment(db, assessment)
+    if stage is None:
+        raise HTTPException(409, {"code": "STAGE_LOCKED", "message": "This assessment is not part of the hiring process."})
     try:
         await pl.require_stage_open(db, application, stage)  # server-side: a LOCKED or finished stage cannot be entered
     except pl.StageLocked as exc:

@@ -218,7 +218,8 @@ async def overview_counts(db: AsyncSession, institution_id) -> dict:
     assessed = await db.scalar(select(func.count(func.distinct(AssessmentAttempt.student_id))).where(
         AssessmentAttempt.student_id.in_(active_ids), AssessmentAttempt.status == "SCORED")) or 0
     interviewed = await db.scalar(select(func.count(func.distinct(Interview.student_id))).where(
-        Interview.student_id.in_(active_ids), Interview.status == "COMPLETED")) or 0
+        Interview.student_id.in_(active_ids), Interview.status == "COMPLETED",
+        Interview.stage_type == "TECHNICAL_INTERVIEW")) or 0  # HR interviews are not technical evidence
     app_counts = dict((await db.execute(select(Application.status, func.count()).where(
         Application.student_id.in_(active_ids)).group_by(Application.status))).all())
     total_apps = sum(app_counts.values())

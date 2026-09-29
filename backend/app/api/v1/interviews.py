@@ -94,7 +94,7 @@ async def start_interview(payload: StartInterviewRequest, user: User = Depends(r
         raise HTTPException(404, f"{S.label(payload.stage_type)} is not part of this hiring process")
     from app.api.v1.proctoring import require_ready_session
 
-    session = await require_ready_session(db, application.id, "INTERVIEW")
+    session = await require_ready_session(db, application.id, "INTERVIEW") if stage.proctored else None
     existing = await db.scalar(select(Interview).where(Interview.application_id == application.id, Interview.stage_type == payload.stage_type))
     if existing:
         if session is not None and session.interview_id is None:

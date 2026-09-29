@@ -62,6 +62,14 @@ async def ensure_version(db: AsyncSession, assessment: Assessment, published_by:
             {"aq_id": str(aq.id), "order_index": aq.order_index, "points": aq.points,
              "question": _q_json(await db.get(Question, aq.question_id))} for aq in aqs]})
     cfg = effective_config(assessment)
+    langs = (assessment.config or {}).get("allowed_languages")
+    if langs:  # the coding stage's language choice narrows each frozen problem (the shared question row is left untouched)
+        for sec in content["sections"]:
+            for item in sec["questions"]:
+                q = item["question"]
+                if q["question_type"] == "CODING":
+                    base = q["allowed_languages"] or list(langs)
+                    q["allowed_languages"] = [x for x in base if x in langs] or list(langs)
     v = AssessmentVersion(assessment_id=assessment.id, version_no=1, duration_minutes=cfg["duration_minutes"], config=cfg, content=content,
                           content_hash=hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest(), published_by=published_by)
     db.add(v)

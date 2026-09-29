@@ -19,7 +19,7 @@ from app.models.enums import JobStatus, UserRole
 from app.models.interviews import Interview, InterviewTemplate, InterviewTurn
 from app.models.jobs import Job
 from app.models.misc import ProcessingJob
-from app.models.pipeline import HiringStage
+from app.models.pipeline import ApplicationStageProgress, HiringStage
 from app.models.users import User
 from app.schemas.student_views import is_student
 from app.services.audit import audit
@@ -263,6 +263,39 @@ async def generation_status(job_id: uuid.UUID, user: User = Depends(require_role
     await get_job_for_member(db, user, job_id)
     rows = (await db.scalars(select(ProcessingJob).where(ProcessingJob.job_key.like(f"stage:{job_id}:%")))).all()
     return [{"stage_type": r.job_key.split(":")[-1], "status": r.status, "error": (r.error or "").split("\n")[0][:300] or None, "result": r.result} for r in rows]
+
+
+@router.get("/jobs/{job_id}/analytics")
+async def stage_analytics(job_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES, UserRole.PLATFORM_ADMIN)), db: AsyncSession = Depends(get_db)):
+    """Per-stage numbers, never one blended score: assessment performance per assessment stage, interview completion and depth, HR completion."""
+    from sqlalchemy import func
+
+    job = await get_job_for_member(db, user, job_id)
+    out = []
+    for st in await pl.ensure_pipeline(db, job):
+        if not st.enabled:
+            continue
+        prog = (await db.execute(select(ApplicationStageProgress.status, func.count()).join(Application, Application.id == ApplicationStageProgress.application_id)
+                                 .where(ApplicationStageProgress.hiring_stage_id == st.id).group_by(ApplicationStageProgress.status))).all()
+        counts = {k: v for k, v in prog}
+        item = {"stage_type": st.stage_type, "label": S.label(st.stage_type), "candidates_reached": sum(v for k, v in counts.items() if k != S.LOCKED),
+                "in_progress": counts.get(S.IN_PROGRESS, 0), "completed": counts.get(S.COMPLETED, 0), "waiting": counts.get(S.AVAILABLE, 0) + counts.get(S.LOCKED, 0)}
+        if S.is_assessment(st.stage_type) and st.assessment_id:
+            n, avg, lo, hi = (await db.execute(select(func.count(AssessmentAttempt.id), func.avg(AssessmentAttempt.total_score), func.min(AssessmentAttempt.total_score),
+                                                      func.max(AssessmentAttempt.total_score)).where(AssessmentAttempt.assessment_id == st.assessment_id,
+                                                                                                    AssessmentAttempt.status == "SCORED"))).one()
+            item["scored_attempts"] = n
+            item["average_score_pct"] = round(float(avg) * 100, 1) if avg is not None else None
+            item["score_range_pct"] = [round(float(lo) * 100, 1), round(float(hi) * 100, 1)] if lo is not None else None
+        elif S.is_interview(st.stage_type):
+            done = (await db.scalars(select(Interview.id).join(Application, Application.id == Interview.application_id)
+                                     .where(Interview.job_id == job.id, Interview.stage_type == st.stage_type, Interview.status == "COMPLETED"))).all()
+            item["interviews_completed"] = len(done)
+            if done:
+                turns = await db.scalar(select(func.count(InterviewTurn.id)).where(InterviewTurn.interview_id.in_(done), InterviewTurn.student_answer_text.is_not(None)))
+                item["average_answered_questions"] = round(turns / len(done), 1)
+        out.append(item)
+    return {"job_id": job.id, "stages": out}
 
 
 @router.post("/jobs/{job_id}/publish")

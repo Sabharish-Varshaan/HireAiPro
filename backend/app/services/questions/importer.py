@@ -42,7 +42,10 @@ EASY_HINTS = re.compile(r"^\s*(what is|what are|define|which|name|list)\b", re.I
 class ImportRow(BaseModel):
     question_text: str
     question_type: QuestionType = QuestionType.TECHNICAL
-    skill: str
+    skill: str | None = None  # required except for APTITUDE and HR_INTERVIEW questions, which use `category`
+    domain: str = "TECHNICAL"  # APTITUDE | TECHNICAL | TECHNICAL_INTERVIEW | HR_INTERVIEW (coding problems are CODING)
+    category: str | None = None
+    sub_category: str | None = None
     difficulty: str | None = None
     options: list[str] | None = None
     correct_option: int | None = None
@@ -141,6 +144,15 @@ async def import_rows(
         except Exception as exc:  # noqa: BLE001
             report.errors.append({"row": i, "error": f"schema: {exc}"[:300]})
             continue
+        domain = (row.domain or "TECHNICAL").upper()
+        if domain in ("APTITUDE", "HR_INTERVIEW"):
+            err = await _import_skillless(db, row, domain, i, report, organization_id=organization_id, created_by=created_by, platform=platform, provenance=provenance)
+            if err:
+                report.errors.append({"row": i, "error": err})
+            continue
+        if not row.skill:
+            report.errors.append({"row": i, "error": "skill is required for technical questions"})
+            continue
         skill_id, _ = await normalize_skill_name(db, row.skill)
         if skill_id is None:
             report.errors.append({"row": i, "error": f"unknown skill '{row.skill}' (not in the canonical taxonomy)"})
@@ -180,9 +192,60 @@ async def import_rows(
             status=QS.VALIDATED if result.ok else QS.DRAFT,
             content_hash=content_hash(row.question_text), validation_report=result.report(),
             created_by_user_id=created_by, provenance=None if platform else provenance,
+            domain=domain if domain in ("TECHNICAL", "TECHNICAL_INTERVIEW") else "TECHNICAL", category=row.category, sub_category=row.sub_category,
         )
         db.add(q)
         await db.flush()
         index_question(q, result.embedding)
         report.created.append(q)
     return report
+
+
+async def _import_skillless(db: AsyncSession, row: ImportRow, domain: str, i: int, report: ImportReport, *, organization_id, created_by, platform: bool,
+                            provenance: str) -> str | None:
+    """Aptitude (MCQ) and HR-interview (open) questions: classified by category, de-duplicated by content hash inside the same organization only."""
+    from sqlalchemy import select
+
+    from app.services.interviews.hr_safety import is_safe_question, sensitive_hits
+    from app.services.pipeline import stages as S
+
+    text = row.question_text.strip()
+    if len(text) < 15:
+        return "question_text is too short"
+    difficulty = (row.difficulty or "medium").lower()
+    if difficulty not in ("easy", "medium", "hard"):
+        return "difficulty must be easy, medium or hard"
+    if domain == "APTITUDE":
+        if row.question_type != QuestionType.MCQ:
+            return "aptitude questions must be MCQ"
+        r = validate_structure(QuestionType.MCQ, text, difficulty, None, None, row.options, row.correct_option, None)
+        if not r.ok:
+            return "; ".join(r.reasons)[:300]
+        if not row.category:
+            return "category is required for aptitude questions"
+        category = next((c for c in S.APTITUDE_CATEGORIES if c.lower() == row.category.lower()), row.category[:40])
+        options, correct, qtype = row.options, row.correct_option, QuestionType.MCQ
+    else:
+        if not is_safe_question(text):
+            return "this question touches a protected or sensitive topic (" + ", ".join(sensitive_hits(text)) + ") and cannot be used in an HR interview"
+        category = next((c for c in S.HR_CATEGORIES if c == (row.category or "").lower()), None)
+        if category is None:
+            return f"category must be one of: {', '.join(S.HR_CATEGORIES)}"
+        options, correct, qtype, difficulty = None, None, QuestionType.TECHNICAL, "medium"
+    h = content_hash(text)
+    dup = await db.scalar(select(Question.id).where(Question.content_hash == h, Question.organization_id == organization_id) if organization_id else
+                          select(Question.id).where(Question.content_hash == h, Question.visibility == Visibility.PLATFORM_PUBLIC))
+    if dup:
+        report.duplicates.append({"row": i, "duplicate_of": str(dup)})
+        return None
+    q = Question(question_text=text, question_type=qtype, skill_id=None, domain=domain, category=category, sub_category=row.sub_category, difficulty=difficulty,
+                 options=options, correct_option_index=correct,
+                 source_type=QuestionSourceType.PLATFORM if platform else QuestionSourceType.COMPANY_PRIVATE,
+                 organization_id=None if platform else organization_id,
+                 visibility=Visibility.PLATFORM_PUBLIC if platform else Visibility.COMPANY_PRIVATE, status=QS.VALIDATED, content_hash=h,
+                 validation_report={"ok": True, "checks": {"structure": True}, "reasons": []}, created_by_user_id=created_by,
+                 provenance=None if platform else provenance)
+    db.add(q)
+    await db.flush()
+    report.created.append(q)
+    return None

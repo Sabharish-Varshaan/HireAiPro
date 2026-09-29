@@ -27,9 +27,23 @@ router = APIRouter(prefix="/applications", tags=["applications"])
 RECRUITER_ROLES = (UserRole.COMPANY_ADMIN, UserRole.RECRUITER, UserRole.HIRING_MANAGER)
 
 
-def _student_view(a: ApplicationOut) -> StudentApplicationView:
+def _student_view(a: ApplicationOut, hint: dict | None = None) -> StudentApplicationView:
     return StudentApplicationView(id=a.id, job_id=a.job_id, status=a.status, job_title=a.job_title,
-                                  organization_name=a.organization_name, applied_at=a.applied_at)
+                                  organization_name=a.organization_name, applied_at=a.applied_at, **(hint or {}))
+
+
+async def _stage_hint(db, application: Application) -> dict:
+    """Candidate-safe pipeline summary for lists and the dashboard: the exact next stage and how many are done."""
+    from app.services.pipeline import service as pl
+    from app.services.pipeline import stages as pl_stages
+
+    rows = await pl.ensure_progress(db, application)  # idempotent backfill for applications that predate the pipeline
+    if not rows:
+        return {}
+    nxt = next(((s, p) for s, p in rows if p.status in ("IN_PROGRESS", "AVAILABLE")), None)
+    return {"next_stage": nxt[0].stage_type if nxt else None, "next_stage_label": pl_stages.label(nxt[0].stage_type) if nxt else None,
+            "next_stage_status": nxt[1].status if nxt else None, "stages_total": len(rows),
+            "stages_done": sum(1 for _, p in rows if p.status in pl_stages.DONE)}
 
 
 async def _enrich(db, a: Application) -> ApplicationOut:
@@ -78,7 +92,7 @@ async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_
     await notify(db, user.id, "assessment_assigned", f"{first_label} available" if first_label else "Assessment ready to take", body=job.title,
                  link=f"/student/applications/{application.id}", dedupe_key=f"app:{application.id}:assessment_assigned")
     await db.commit()
-    return _student_view(await _enrich(db, application))
+    return _student_view(await _enrich(db, application), await _stage_hint(db, application))
 
 
 @router.get("/mine", response_model=list[StudentApplicationView])
@@ -87,7 +101,9 @@ async def my_applications(user: User = Depends(require_roles(UserRole.STUDENT)),
     if me is None:
         return []
     rows = (await db.scalars(select(Application).where(Application.student_id == me.id).order_by(Application.created_at.desc()))).all()
-    return [_student_view(await _enrich(db, a)) for a in rows]
+    out = [_student_view(await _enrich(db, a), await _stage_hint(db, a)) for a in rows]
+    await db.commit()
+    return out
 
 
 @router.get("/job/{job_id}", response_model=list[ApplicationOut])
@@ -106,7 +122,11 @@ async def get_application(application_id: uuid.UUID, user: User = Depends(get_cu
         raise HTTPException(404, "Application not found")
     await assert_can_view_application(db, user, a)
     out = await _enrich(db, a)
-    return _student_view(out) if is_student(user) else out
+    if is_student(user):
+        view = _student_view(out, await _stage_hint(db, a))
+        await db.commit()
+        return view
+    return out
 
 
 @router.get("/{application_id}/history")

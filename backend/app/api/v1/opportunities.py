@@ -67,20 +67,29 @@ async def list_opportunities(institution_id: uuid.UUID, status: str | None = Non
     for job, org in (await db.execute(stmt)).all():
         skills = (await db.execute(select(Skill.canonical_name, JobSkill.requirement_type).join(JobSkill, JobSkill.skill_id == Skill.id)
                                    .where(JobSkill.job_id == job.id, JobSkill.confirmed.is_(True)))).all()
-        version = await db.scalar(select(AssessmentVersion).join(Assessment, Assessment.id == AssessmentVersion.assessment_id)
-                                  .where(Assessment.job_id == job.id).order_by(AssessmentVersion.version_no.desc()))
+        versions = []
+        for a_id in (await db.scalars(select(Assessment.id).where(Assessment.job_id == job.id))).all():
+            v = await db.scalar(select(AssessmentVersion).where(AssessmentVersion.assessment_id == a_id).order_by(AssessmentVersion.version_no.desc()))
+            if v is not None:
+                versions.append(v)
         assessment = None
-        if version is not None:  # what the assessment is, never its questions
+        if versions:  # what the assessments are (all stages together), never their questions
             types: dict[str, int] = {}
-            for sec in version.content["sections"]:
-                for item in sec["questions"]:
-                    t = item["question"]["question_type"]
-                    types[t] = types.get(t, 0) + 1
-            assessment = {"question_count": sum(types.values()), "duration_minutes": version.duration_minutes, "types": types}
+            for version in versions:
+                for sec in version.content["sections"]:
+                    for item in sec["questions"]:
+                        t = item["question"]["question_type"]
+                        types[t] = types.get(t, 0) + 1
+            assessment = {"question_count": sum(types.values()), "duration_minutes": sum(v.duration_minutes for v in versions), "types": types}
+        from app.services.pipeline import stages as pipeline_stages
+        from app.models.pipeline import HiringStage
+
+        stage_rows = (await db.scalars(select(HiringStage).where(HiringStage.job_id == job.id, HiringStage.enabled.is_(True)).order_by(HiringStage.order_index))).all()
+        process = [pipeline_stages.label(s.stage_type) for s in stage_rows]
         out.append({"job_id": job.id, "title": job.title, "company": org, "location": job.location, "employment_type": job.employment_type,
                     "work_mode": job.work_mode, "display": job.display, "number_of_openings": job.number_of_openings,
                     "description": job.description_raw, "status": job.institution_approval, "note": job.approval_note,
-                    "eligibility": job.eligibility, "assessment": assessment,
+                    "eligibility": job.eligibility, "assessment": assessment, "hiring_process": process,
                     "skills": [{"name": n, "type": str(t)} for n, t in skills], "submitted_at": job.updated_at})
     return out
 
