@@ -2,7 +2,7 @@ import Editor from "@monaco-editor/react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api/client";
-import { Badge, Button, ErrorBox, inputCls } from "../../components/ui";
+import { Badge, Button, ErrorBox, humanize, inputCls } from "../../components/ui";
 
 type Lang = { id: string; display_name: string; monaco: string; judge0_language_id: number | null; available: boolean };
 
@@ -50,13 +50,26 @@ int main() {
 `,
 };
 
-export function CodingQuestion({ aqId, question, savedText, saveAndGetAnswerId }: {
-  aqId: string; question: any; savedText?: string | null;
+export function CodingQuestion({
+  aqId,
+  question,
+  savedText,
+  saveAndGetAnswerId,
+}: {
+  aqId: string;
+  question: any;
+  savedText?: string | null;
   // One upsert that stores the source and returns the answer id (never two parallel saves).
   saveAndGetAnswerId: (text: string) => Promise<string>;
 }) {
-  const langs = useQuery({ queryKey: ["coding-languages"], queryFn: () => api.get("/coding/languages").then((r) => r.data as Lang[]), staleTime: 60_000 });
-  const allowed = (langs.data ?? []).filter((l) => !question.allowed_languages || question.allowed_languages.includes(l.id));
+  const langs = useQuery({
+    queryKey: ["coding-languages"],
+    queryFn: () => api.get("/coding/languages").then((r) => r.data as Lang[]),
+    staleTime: 60_000,
+  });
+  const allowed = (langs.data ?? []).filter(
+    (l) => !question.allowed_languages || question.allowed_languages.includes(l.id)
+  );
   const [lang, setLang] = useState<string>("python");
   // One draft per language, so switching never submits Python source as C++.
   const [drafts, setDrafts] = useState<Record<string, string>>(() => ({
@@ -71,16 +84,27 @@ export function CodingQuestion({ aqId, question, savedText, saveAndGetAnswerId }
   const [showCustom, setShowCustom] = useState(false);
   const samples: { input: string; expected_output: string }[] = question.sample_tests ?? [];
 
-  const body = (answerId: string) => ({ assessment_answer_id: answerId, question_id: question.id, language: current!.id, source_code: source });
+  const body = (answerId: string) => ({
+    assessment_answer_id: answerId,
+    question_id: question.id,
+    language: current!.id,
+    source_code: source,
+  });
   const runSamples = useMutation({
     mutationFn: async () => {
       const answerId = await saveAndGetAnswerId(source);
-      return (await api.post("/coding/run", { ...body(answerId), custom_input: showCustom && custom ? custom : null })).data;
+      return (
+        await api.post("/coding/run", {
+          ...body(answerId),
+          custom_input: showCustom && custom ? custom : null,
+        })
+      ).data;
     },
     onMutate: () => setRunResult(null),
     onSuccess: setRunResult,
   });
-  const run = useMutation({  // Submit: all hidden tests, scored
+  const run = useMutation({
+    // Submit: all hidden tests, scored
     mutationFn: async () => {
       const answerId = await saveAndGetAnswerId(source);
       return (await api.post("/coding/submit", body(answerId))).data;
@@ -91,59 +115,188 @@ export function CodingQuestion({ aqId, question, savedText, saveAndGetAnswerId }
   const busy = run.isPending || runSamples.isPending;
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <label htmlFor={`lang-${aqId}`} className="text-gray-600">Language</label>
-        <select id={`lang-${aqId}`} className={`${inputCls} w-52`} value={current?.id ?? ""} disabled={busy || !allowed.length}
-          onChange={(e) => setLang(e.target.value)}>
-          {allowed.map((l) => <option key={l.id} value={l.id} disabled={!l.available}>{l.display_name}{l.available ? "" : " (unavailable)"}</option>)}
-        </select>
-        {current && !current.available && <span className="text-xs text-amber-700">Code runner unavailable — you can keep editing and retry.</span>}
+    <div className="space-y-3">
+      {/* Language Selector & Instructions */}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2">
+          <label htmlFor={`lang-${aqId}`} className="font-semibold text-gray-700">
+            Language:
+          </label>
+          <select
+            id={`lang-${aqId}`}
+            className={`${inputCls} w-48`}
+            value={current?.id ?? ""}
+            disabled={busy || !allowed.length}
+            onChange={(e) => setLang(e.target.value)}
+          >
+            {allowed.map((l) => (
+              <option key={l.id} value={l.id} disabled={!l.available}>
+                {l.display_name}
+                {l.available ? "" : " (unavailable)"}
+              </option>
+            ))}
+          </select>
+        </div>
+        {current && !current.available && (
+          <span className="text-xs text-amber-700 bg-amber-50 px-2.5 py-1 rounded border border-amber-200">
+            Runner temporarily unavailable — edit and retry shortly.
+          </span>
+        )}
       </div>
-      <p className="text-xs text-gray-500">
-        Your program reads the test input from <b>standard input</b> and prints the answer to <b>standard output</b> (surrounding whitespace ignored).
-        <b> Run</b> checks the sample tests below. <b>Submit code</b> grades against all tests{question.hidden_test_count ? ` (${question.hidden_test_count} hidden)` : ""}; hidden inputs and outputs are never shown.
-      </p>
+
+      <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 leading-relaxed">
+        Reads test input from <b>standard input</b> and prints answer to <b>standard output</b>.
+        Use <b>Run (samples)</b> to test against visible sample inputs. Use <b>Submit Code</b> to evaluate all tests
+        {question.hidden_test_count ? ` (${question.hidden_test_count} hidden)` : ""}.
+      </div>
+
+      {/* Visible Samples */}
       {samples.length > 0 && (
-        <div className="text-xs space-y-1" data-testid="samples">
-          <p className="font-medium">Sample tests</p>
-          {samples.map((t, i) => (
-            <div key={i} className="grid grid-cols-2 gap-2 bg-gray-50 border border-gray-200 rounded p-1.5">
-              <div><span className="text-gray-500">Input</span><pre className="whitespace-pre-wrap">{t.input}</pre></div>
-              <div><span className="text-gray-500">Expected output</span><pre className="whitespace-pre-wrap">{t.expected_output}</pre></div>
-            </div>))}
+        <div className="space-y-1.5" data-testid="samples">
+          <p className="text-xs font-semibold text-gray-700">Sample Test Cases</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {samples.map((t, i) => (
+              <div key={i} className="bg-gray-50 border border-gray-200 rounded-lg p-2.5 space-y-1">
+                <span className="text-gray-400 font-semibold block text-[11px]">Sample {i + 1}</span>
+                <div className="grid grid-cols-2 gap-2 font-mono">
+                  <div>
+                    <span className="text-gray-500 block text-[10px]">Input:</span>
+                    <pre className="bg-white p-1 rounded border border-gray-100 whitespace-pre-wrap">{t.input}</pre>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-[10px]">Expected:</span>
+                    <pre className="bg-white p-1 rounded border border-gray-100 whitespace-pre-wrap">{t.expected_output}</pre>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
-      {current && (
-        <Editor key={`${aqId}-${current.id}`} height="260px" language={current.monaco} value={source}
-          onChange={(v) => setDrafts((d) => ({ ...d, [current.id]: v ?? "" }))}
-          options={{ minimap: { enabled: false }, fontSize: 13 }} />
-      )}
-      {showCustom && <textarea className="w-full border border-gray-300 rounded-md p-2 text-xs font-mono" rows={3} placeholder="Custom input (stdin)" value={custom} onChange={(e) => setCustom(e.target.value)} />}
-      <div className="flex flex-wrap gap-2 items-center">
-        <Button variant="secondary" disabled={busy || !current?.available} onClick={() => runSamples.mutate()}>
-          {runSamples.isPending ? "Running…" : "Run (samples)"}</Button>
-        <Button disabled={busy || !current?.available} onClick={() => run.mutate()}>
-          {run.isPending ? `Grading in Judge0 (${current?.display_name})…` : `Submit code (${current?.display_name ?? "…"})`}</Button>
-        <button type="button" className="text-xs underline text-gray-600" onClick={() => setShowCustom((v) => !v)}>{showCustom ? "Hide custom input" : "Try custom input"}</button>
+
+      {/* Monaco Code Editor Workspace */}
+      <div className="border border-gray-300 rounded-xl overflow-hidden shadow-inner">
+        {current && (
+          <Editor
+            key={`${aqId}-${current.id}`}
+            height="300px"
+            language={current.monaco}
+            value={source}
+            onChange={(v) => setDrafts((d) => ({ ...d, [current.id]: v ?? "" }))}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 13,
+              scrollBeyondLastLine: false,
+              lineNumbers: "on",
+              tabSize: 4,
+            }}
+          />
+        )}
       </div>
-      <ErrorBox error={run.error || runSamples.error || langs.error} />
-      {runResult && (
-        <div className="text-xs space-y-1" data-testid="run-result">
-          {runResult.samples.map((t: any) => (
-            <p key={t.index}><Badge tone={t.passed ? "green" : "red"}>{t.passed ? "PASS" : "FAIL"}</Badge> Sample {t.index + 1}: {t.status}
-              {!t.passed && t.stdout != null && <> — your output <code>{t.stdout.trim().slice(0, 120)}</code></>}
-              {t.stderr && <pre className="text-red-600 whitespace-pre-wrap">{t.stderr.slice(0, 300)}</pre>}</p>))}
-          {runResult.custom && <div><span className="text-gray-500">Custom input → </span><Badge>{runResult.custom.status}</Badge><pre className="whitespace-pre-wrap">{runResult.custom.stdout}</pre>
-            {runResult.custom.stderr && <pre className="text-red-600 whitespace-pre-wrap">{runResult.custom.stderr}</pre>}</div>}
+
+      {showCustom && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-700">Custom Standard Input (stdin)</label>
+          <textarea
+            className="w-full border border-gray-300 rounded-lg p-2.5 text-xs font-mono focus:border-blue-600 focus:outline-none"
+            rows={3}
+            placeholder="Type custom test input here…"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+          />
         </div>
       )}
+
+      {/* Action Controls: Run (secondary) vs Submit (primary) */}
+      <div className="flex flex-wrap gap-2.5 items-center pt-1">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy || !current?.available}
+          onClick={() => runSamples.mutate()}
+        >
+          {runSamples.isPending ? "Running samples…" : "▶ Run (samples)"}
+        </Button>
+
+        <Button
+          size="sm"
+          disabled={busy || !current?.available}
+          onClick={() => run.mutate()}
+        >
+          {run.isPending
+            ? `Grading your code (${current?.display_name})…`
+            : `Submit Code (${current?.display_name ?? "…"})`}
+        </Button>
+
+        <button
+          type="button"
+          className="text-xs font-medium underline text-gray-600 hover:text-gray-900 ml-auto"
+          onClick={() => setShowCustom((v) => !v)}
+        >
+          {showCustom ? "Hide custom input" : "Try custom input"}
+        </button>
+      </div>
+
+      <ErrorBox error={run.error || runSamples.error || langs.error} />
+
+      {/* Sample Execution Results */}
+      {runResult && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs space-y-2" data-testid="run-result">
+          <p className="font-semibold text-gray-800">Sample Execution Output</p>
+          {runResult.samples.map((t: any) => (
+            <div key={t.index} className="flex items-start gap-2">
+              <Badge tone={t.passed ? "green" : "red"}>{t.passed ? "PASS" : "FAIL"}</Badge>
+              <div className="space-y-0.5">
+                <span className="font-medium">
+                  Sample {t.index + 1}: {humanize(t.status)}
+                </span>
+                {!t.passed && t.stdout != null && (
+                  <p className="font-mono text-gray-600">
+                    Your output: <code>{t.stdout.trim().slice(0, 120)}</code>
+                  </p>
+                )}
+                {t.stderr && (
+                  <pre className="text-red-600 bg-red-50 p-1.5 rounded font-mono text-[11px] whitespace-pre-wrap">
+                    {t.stderr.slice(0, 300)}
+                  </pre>
+                )}
+              </div>
+            </div>
+          ))}
+          {runResult.custom && (
+            <div className="pt-2 border-t border-gray-200 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-gray-700">Custom Input Result:</span>
+                <Badge>{runResult.custom.status}</Badge>
+              </div>
+              <pre className="bg-white p-2 rounded border border-gray-200 font-mono text-[11px] whitespace-pre-wrap">
+                {runResult.custom.stdout}
+              </pre>
+              {runResult.custom.stderr && (
+                <pre className="text-red-600 bg-red-50 p-2 rounded font-mono text-[11px] whitespace-pre-wrap">
+                  {runResult.custom.stderr}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Submission Final Scored Results */}
       {result && (
-        <div className="text-xs space-y-1" data-testid="coding-result">
-          <p><b>{RESULT_LABEL[result.result] ?? result.result}</b> · {result.language} · <Badge>{result.execution_backend}</Badge></p>
-          {result.message && <pre className="text-red-600 whitespace-pre-wrap">{result.message.slice(0, 400)}</pre>}
-          {result.execution_backend?.includes("local_fallback") && (
-            <p className="text-amber-700">Executed by the local development fallback, not the Judge0 sandbox. Development only.</p>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs space-y-1.5" data-testid="coding-result">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-blue-950">
+              {RESULT_LABEL[result.result] ?? result.result}
+            </span>
+            <span>·</span>
+            <span className="font-medium text-blue-900">{result.language}</span>
+            <Badge>{result.execution_backend}</Badge>
+          </div>
+          {result.message && (
+            <pre className="text-red-700 bg-red-50 p-2 rounded font-mono text-[11px] whitespace-pre-wrap">
+              {result.message.slice(0, 400)}
+            </pre>
           )}
         </div>
       )}

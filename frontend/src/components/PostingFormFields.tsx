@@ -27,7 +27,7 @@ export function PostingFormFields({ f, set, showTitle, lockedExceptDeadline }: {
         </Section>
       )}
       <Section title="Role details">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <Field label="Experience">
             <select className={inputCls} value={f.exp_level} onChange={on("exp_level")} disabled={dis} data-testid="pf-exp-level">
               <option value="">Not specified</option><option value="FRESHER">Fresher</option><option value="EXPERIENCED">Experienced</option></select></Field>

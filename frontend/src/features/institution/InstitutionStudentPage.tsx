@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Badge, Card, Empty, ErrorBox, Loading, Table, pct } from "../../components/ui";
+import { Badge, Card, Empty, ErrorBox, Loading, Table, humanize, pct } from "../../components/ui";
 import { ProctoringPanel } from "../proctoring/ProctoringPanel";
 
 function ApplicationReview({ app }: { app: any }) {
@@ -14,7 +14,7 @@ function ApplicationReview({ app }: { app: any }) {
   return (
     <Card title={`${app.job_title} · ${app.organization_name}`} actions={<Badge>{app.status}</Badge>}>
       <div className="text-sm space-y-1 mb-3">
-        <p>Assessment: {attempt.data?.attempt ? <>{attempt.data.attempt.status} · score {pct(attempt.data.attempt.total_score)}</> : "not started"}</p>
+        <p>Assessment: {attempt.data?.attempt ? <>{humanize(attempt.data.attempt.status)} · score {pct(attempt.data.attempt.total_score)}</> : "not started"}</p>
         <p>Interview: {interview.data ? interview.data.status : "not started"}</p>
         <p>Match: {match.data?.match_score != null ? pct(match.data.match_score) : "not computed"}</p>
       </div>
