@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { ProctoringPanel } from "../proctoring/ProctoringPanel";
-import { StageResultCard, StageTimeline } from "./CandidateStages";
+import { RoundTimeline, StageResultCard, StageTimeline } from "./CandidateStages";
 import {
   Badge,
   Button,
@@ -275,6 +275,16 @@ export default function CandidatePage() {
 
       {activeTab === "decision" && (
         <div className="space-y-5">
+          <Card
+            title="Round results"
+            description="Each round's score against its qualification requirement. The automatic result is never edited; a recruiter override is recorded beside it."
+          >
+            <RoundTimeline
+              applicationId={applicationId!}
+              stages={stages}
+              onChanged={() => ["cand-pipeline", "application", "history"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }))}
+            />
+          </Card>
           <Card
             title="Hiring Decision & Status"
             description="Update the candidate status and record internal reviewer notes."

@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../../api/client";
 import { Badge, Card, Empty, ErrorBox, Loading } from "../../components/ui";
-import { STAGE_BLURB, type JourneyStage } from "../../lib/pipeline";
+import { STAGE_BLURB, fmtScore, type JourneyStage } from "../../lib/pipeline";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
 import { ProctoredGate } from "../proctoring/ProctoredGate";
@@ -40,11 +40,28 @@ export function JourneyStrip({ stages, applied, decided }: { stages: JourneyStag
 }
 
 function CompletedNote({ stage, interview }: { stage: JourneyStage; interview?: boolean }) {
+  const r = stage.round;
   return (
-    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900" data-testid={`stage-done-${stage.stage_type}`}>
-      ✓ <strong>{stage.label} completed</strong>
-      {stage.completed_at ? ` on ${new Date(stage.completed_at).toLocaleDateString()}` : ""}.{" "}
-      {interview ? "Your answers were shared with the hiring team." : "Your responses were saved and scored. Results are shared with the recruiter."}
+    <div className="space-y-3">
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900" data-testid={`stage-done-${stage.stage_type}`}>
+        ✓ <strong>{stage.label} completed</strong>
+        {stage.completed_at ? ` on ${new Date(stage.completed_at).toLocaleDateString()}` : ""}.{" "}
+        {interview ? "Your answers were shared with the hiring team." : "Your responses were saved and scored. Results are shared with the recruiter."}
+      </div>
+      {r && (
+        <dl className="grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm sm:grid-cols-4" data-testid={`round-result-${stage.stage_type}`}>
+          {r.decision === "EVALUATION_PENDING" ? (
+            <div className="sm:col-span-4"><dt className="text-xs text-gray-500">Result</dt><dd className="font-medium text-gray-900">We are still evaluating this round.</dd></div>
+          ) : (
+            <>
+              <div><dt className="text-xs text-gray-500">Score</dt><dd className="text-lg font-semibold text-gray-900">{fmtScore(r.score)}</dd></div>
+              <div><dt className="text-xs text-gray-500">Qualification requirement</dt><dd className="text-lg font-semibold text-gray-900">{fmtScore(r.threshold)}</dd></div>
+              <div><dt className="text-xs text-gray-500">Result</dt><dd className={`font-medium ${r.decision === "QUALIFIED" ? "text-emerald-700" : "text-gray-900"}`}>{r.result_label}</dd></div>
+              {r.next && <div><dt className="text-xs text-gray-500">Next</dt><dd className="font-medium text-gray-900">{r.next}</dd></div>}
+            </>
+          )}
+        </dl>
+      )}
     </div>
   );
 }
@@ -145,7 +162,13 @@ export function StageCards({ applicationId, stages, onChange }: { applicationId:
           actions={<Badge>{s.status}</Badge>}
         >
           {s.status === "LOCKED" ? (
-            <Empty>{i > 0 ? `This step opens after you finish ${stages[i - 1].label}.` : "This step is not open yet."}</Empty>
+            <Empty>
+              {i === 0
+                ? "This step is not open yet."
+                : stages[i - 1].status === "COMPLETED" && stages[i - 1].round && stages[i - 1].round!.decision !== "QUALIFIED"
+                ? "This step is not open. The hiring team reviews your result from the previous step."
+                : `This step opens after you finish ${stages[i - 1].label}.`}
+            </Empty>
           ) : s.kind === "assessment" ? (
             s.assessment_id ? <AssessmentStage applicationId={applicationId} stage={s} onChange={onChange} /> : <Empty>The questions for this step are not published yet.</Empty>
           ) : (

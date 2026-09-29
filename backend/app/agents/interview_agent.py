@@ -364,7 +364,15 @@ async def evaluate_hr_answer(turn: InterviewTurn) -> dict:
 
 
 async def evaluate_turn_answer(turn: InterviewTurn) -> RubricEvaluation:
+    from app.agents.orchestrator import job_context
+    from app.core.database import AsyncSessionLocal
+    from app.models.interviews import Interview
+
+    async with AsyncSessionLocal() as _db:  # compact job context for the evaluator: role, requirements, round (no candidate history)
+        itv = await _db.get(Interview, turn.interview_id)
+        ctx = await job_context(_db, itv.job_id, stage_type=itv.stage_type) if itv else None
     rubric = {
+        "job_context": ctx,
         "question": turn.question_text,
         "difficulty": turn.difficulty,
         "criteria": [

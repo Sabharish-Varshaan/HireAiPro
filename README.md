@@ -65,8 +65,42 @@ results), **Company/Recruiter** (signs up with a company, creates jobs and asses
 ## Proctoring, privacy and voice
 Assessments and interviews run behind a consented system check and objective proctoring (events only,
 no recording, no cheating score) — [docs/PROCTORING.md](docs/PROCTORING.md). Students never receive
-numeric evaluations — [docs/SCORE_VISIBILITY.md](docs/SCORE_VISIBILITY.md). Interview questions are read
-aloud by the browser with Replay/Mute.
+numeric evaluations of their answers — [docs/SCORE_VISIBILITY.md](docs/SCORE_VISIBILITY.md); the one exception is the company-configured round result
+(score, requirement, outcome) shown after a round. Interview questions are read aloud by the browser with Replay/Mute.
+
+## Hiring rounds, thresholds and adaptive agents
+```
+Job Configuration
+       ↓
+Hiring Rounds (per job: aptitude, technical, coding, technical interview, HR interview)
+       ↓
+Assessment / Interview
+       ↓
+Adaptive Agent Evaluation (rubric evidence, structured output)
+       ↓
+Normalized Score (0-100, weighted components set by the company)
+       ↓
+Threshold Engine (deterministic: score >= threshold)
+       ↓
+Qualified?
+   YES            NO
+    ↓              ↓
+Next Round     Stop / Manual Review (a person may advance or hold, with a reason)
+```
+The pass/fail transition is plain backend arithmetic on a frozen score; no model is ever asked whether a candidate should advance. The threshold and weights
+used are stored with each result, so history is never silently recalculated. Details: [docs/ROUND_QUALIFICATION.md](docs/ROUND_QUALIFICATION.md).
+
+```
+Task Demand
+    ↓
+Capability Resolver (app/agents/orchestrator.py)
+    ↓
+Required Agents Only (deterministic components first; MCQ never calls a model)
+    ↓
+Cost-aware Model Router (existing provider chain, fallback and timeouts)
+    ↓
+Structured Result + compact execution trace (agent_runs)
+```
 
 ## Docs
 

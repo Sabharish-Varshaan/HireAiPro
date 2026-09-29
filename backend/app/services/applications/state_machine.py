@@ -7,7 +7,7 @@ ALLOWED_TRANSITIONS: dict[ApplicationStatus, set[ApplicationStatus]] = {
     ApplicationStatus.ASSESSMENT_COMPLETED: {ApplicationStatus.INTERVIEW_PENDING, ApplicationStatus.REJECTED, ApplicationStatus.UNDER_REVIEW},
     ApplicationStatus.INTERVIEW_PENDING: {ApplicationStatus.INTERVIEW_COMPLETED, ApplicationStatus.REJECTED},
     ApplicationStatus.INTERVIEW_COMPLETED: {ApplicationStatus.UNDER_REVIEW, ApplicationStatus.REJECTED},
-    ApplicationStatus.UNDER_REVIEW: {ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED},
+    ApplicationStatus.UNDER_REVIEW: {ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED, ApplicationStatus.ASSESSMENT_PENDING, ApplicationStatus.INTERVIEW_PENDING},  # the last two: a recruiter advance resumes the pipeline
     ApplicationStatus.SHORTLISTED: {ApplicationStatus.OFFER, ApplicationStatus.REJECTED},
     ApplicationStatus.OFFER: set(),
     ApplicationStatus.REJECTED: set(),

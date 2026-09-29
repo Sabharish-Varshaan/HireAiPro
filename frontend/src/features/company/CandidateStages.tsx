@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "../../api/client";
-import { Badge, Card, Empty, Loading, Table, humanize, pct, questionTypeLabel } from "../../components/ui";
-import { HR_CATEGORY_LABEL, type JourneyStage } from "../../lib/pipeline";
+import { Badge, Button, Card, Empty, ErrorBox, Loading, Table, humanize, pct, questionTypeLabel } from "../../components/ui";
+import { COMPONENT_LABEL, DECISION_LABEL, HR_CATEGORY_LABEL, fmtScore, type JourneyStage, type RoundView } from "../../lib/pipeline";
 
 const LAYER_LABEL: Record<number, string> = { 1: "Core concept", 2: "How and why", 3: "Applied scenario", 4: "Edge case", 5: "Trade-off" };
 const dot = (s: string) =>
@@ -182,6 +183,102 @@ function InterviewResult({ stage }: { stage: JourneyStage }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Round-by-round qualification record with the automatic result, the component breakdown and a controlled human override. */
+export function RoundTimeline({ applicationId, stages, onChanged }: { applicationId: string; stages: JourneyStage[]; onChanged: () => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [form, setForm] = useState<{ stage: string; decision: "ADVANCE" | "HOLD"; reason: string } | null>(null);
+  const override = useMutation({
+    mutationFn: () => api.post(`/hiring-pipeline/applications/${applicationId}/stages/${form!.stage}/override`, { decision: form!.decision, reason: form!.reason }),
+    onSuccess: () => {
+      setForm(null);
+      onChanged();
+    },
+  });
+  const reeval = useMutation({
+    mutationFn: (stage: string) => api.post(`/hiring-pipeline/applications/${applicationId}/stages/${stage}/evaluate`),
+    onSuccess: onChanged,
+  });
+  const resultText = (r: RoundView | null | undefined, s: JourneyStage) => {
+    if (s.status === "LOCKED" || s.status === "AVAILABLE") return "Pending";
+    if (s.status === "IN_PROGRESS") return "In progress";
+    if (!r) return "Completed";
+    if (r.override) return r.override.decision === "ADVANCED" ? "Advanced by recruiter" : "Held for review";
+    if (r.decision === "MANUAL_REVIEW" && !s.pass_threshold) return "Completed";
+    return DECISION_LABEL[r.decision] ?? "Completed";
+  };
+  return (
+    <div className="space-y-2" data-testid="round-timeline">
+      {stages.map((s) => {
+        const r = s.round;
+        const scored = r && r.score != null;
+        const canOverride = !!r && r.decision !== "EVALUATION_PENDING" && r.threshold != null && s.status === "COMPLETED";
+        const advancing = r && r.decision === "QUALIFIED";
+        return (
+          <div key={s.stage_id} className="rounded-lg border border-gray-200 bg-white" data-testid={`round-${s.stage_type}`}>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 p-3 text-sm">
+              <span className="w-44 font-medium text-gray-900">{s.label}</span>
+              <span className="w-24 tabular-nums text-gray-900">{scored ? fmtScore(r!.score) : "—"}</span>
+              <span className="w-28 text-xs text-gray-500">{s.pass_threshold != null ? `Requirement ${fmtScore(s.pass_threshold)}` : s.kind === "assessment" || s.stage_type === "TECHNICAL_INTERVIEW" ? "No threshold" : "Manual decision"}</span>
+              <span className="flex-1 font-medium text-gray-800">{resultText(r, s)}</span>
+              {r?.evaluated_at && <span className="text-xs text-gray-400">{new Date(r.evaluated_at).toLocaleString()}</span>}
+              {r && (
+                <button type="button" className="text-xs font-medium text-blue-700 hover:underline" aria-expanded={open === s.stage_id} onClick={() => setOpen(open === s.stage_id ? null : s.stage_id)}>
+                  {open === s.stage_id ? "Hide details" : "Details"}
+                </button>
+              )}
+            </div>
+            {open === s.stage_id && r && (
+              <div className="space-y-3 border-t border-gray-100 p-3 text-xs text-gray-700">
+                {Object.keys(r.components ?? {}).length > 0 ? (
+                  <table className="w-full">
+                    <thead><tr className="text-left text-gray-500"><th className="py-1 font-medium">Component</th><th className="font-medium">Score</th><th className="font-medium">Weight</th></tr></thead>
+                    <tbody>
+                      {Object.entries(r.components!).map(([k, c]) => (
+                        <tr key={k}><td className="py-1">{COMPONENT_LABEL[k] ?? humanize(k)}</td><td>{fmtScore(c.score)}</td><td>{c.weight != null ? `${c.weight}%` : "—"}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p>No component breakdown for this round.</p>
+                )}
+                <p>
+                  Automatic result: <b>{DECISION_LABEL[r.automatic_decision ?? r.decision]}</b>
+                  {r.threshold != null && <> (score {fmtScore(r.score)} against a requirement of {fmtScore(r.threshold)})</>}. Evaluation {r.evaluation_version}.
+                </p>
+                {r.override && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-900" data-testid="override-note">
+                    Override: {r.override.decision === "ADVANCED" ? "advanced by recruiter" : "held for review"} on {new Date(r.override.at).toLocaleString()}. Reason: “{r.override.reason}”. Previous decision: {DECISION_LABEL[r.override.previous] ?? r.override.previous}.
+                  </p>
+                )}
+                {canOverride && (
+                  <div className="flex flex-wrap gap-2">
+                    {!advancing && <Button size="sm" onClick={() => setForm({ stage: s.stage_type, decision: "ADVANCE", reason: "" })} data-testid={`override-advance-${s.stage_type}`}>Advance to next round</Button>}
+                    {advancing && <Button size="sm" variant="secondary" onClick={() => setForm({ stage: s.stage_type, decision: "HOLD", reason: "" })}>Hold for manual review</Button>}
+                    <Button size="sm" variant="ghost" onClick={() => reeval.mutate(s.stage_type)} disabled={reeval.isPending}>Re-evaluate with current settings</Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {form?.stage === s.stage_type && (
+              <div className="space-y-2 border-t border-gray-100 bg-gray-50 p-3" data-testid="override-form">
+                <label className="block text-xs font-medium text-gray-700" htmlFor="override-reason">
+                  Reason for {form.decision === "ADVANCE" ? "advancing this candidate despite the score" : "holding this candidate"} (required, kept in the audit trail)
+                </label>
+                <textarea id="override-reason" className="w-full rounded-md border border-gray-300 p-2 text-sm" rows={2} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => override.mutate()} disabled={override.isPending || form.reason.trim().length < 5}>Confirm</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setForm(null)}>Cancel</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <ErrorBox error={override.error || reeval.error} />
     </div>
   );
 }

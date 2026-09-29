@@ -36,7 +36,45 @@ export const HR_CATEGORY_LABEL: Record<string, string> = {
 export const APTITUDE_CATEGORIES = ["Quantitative Aptitude", "Logical Reasoning", "Analytical Reasoning", "Data Interpretation", "Verbal Ability"];
 export const CODING_LANGUAGES: [string, string][] = [["python", "Python"], ["javascript", "JavaScript"], ["cpp", "C++"]];
 
+export const COMPONENT_LABEL: Record<string, string> = {
+  mcq: "Multiple choice",
+  written: "Written answers",
+  coding: "Coding",
+  accuracy: "Technical accuracy",
+  reasoning: "Reasoning",
+  completeness: "Completeness",
+  communication: "Communication",
+  overall: "Overall",
+};
+
+/** Scores are 0 to 100 everywhere ("74 / 100", one decimal at most). */
+export const fmtScore = (v: number | null | undefined) => (v == null ? "—" : `${Number.isInteger(v) ? v : v.toFixed(1)} / 100`);
+
+export const DECISION_LABEL: Record<string, string> = {
+  QUALIFIED: "Qualified",
+  NOT_QUALIFIED: "Not qualified",
+  MANUAL_REVIEW: "Manual review",
+  EVALUATION_PENDING: "Evaluation pending",
+};
+
+export type RoundView = {
+  score: number | null;
+  threshold: number | null;
+  decision: string;
+  result_label?: string;
+  next?: string | null;
+  automatic_decision?: string;
+  reason?: string;
+  evaluated_at?: string;
+  evaluation_version?: number;
+  components?: Record<string, { score: number | null; weight: number | null }>;
+  override?: { decision: string; reason: string; by: string; at: string; previous: string } | null;
+};
+
 export type JourneyStage = {
+  round?: RoundView | null;
+  pass_threshold?: number | null;
+  auto_qualify?: boolean | null;
   stage_id: string;
   stage_type: string;
   label: string;

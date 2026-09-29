@@ -6,6 +6,7 @@ import { Badge, Button, Card, Empty, ErrorBox, Loading, Table, humanize, inputCl
 import {
   APTITUDE_CATEGORIES,
   CODING_LANGUAGES,
+  COMPONENT_LABEL,
   HR_CATEGORY_LABEL,
   STAGE_BLURB,
   isInterview,
@@ -25,6 +26,11 @@ type StageView = {
   assessment_id: string | null;
   group: "assessment" | "interview";
   readiness: { state: string; detail: string; questions?: number };
+  pass_threshold: number | null;
+  auto_qualify: boolean;
+  weights: Record<string, number> | null;
+  weight_components: string[];
+  default_weights: Record<string, number> | null;
 };
 
 const DOMAIN_OF: Record<string, string | null> = {
@@ -57,6 +63,9 @@ const toPayload = (s: StageView) => ({
   question_count: s.question_count,
   proctored: s.proctored,
   config: s.config,
+  pass_threshold: s.pass_threshold,
+  auto_qualify: s.auto_qualify,
+  weights: s.weights,
 });
 
 function num(v: string): number | null {
@@ -241,6 +250,94 @@ function StageSettings({ stage, skills, disabled, update }: { stage: StageView; 
         </>
       )}
     </fieldset>
+  );
+}
+
+/** Qualification requirement for a round. Before publishing it is part of the hiring-process draft; after publishing it saves on its own
+ *  (round content is frozen, the requirement is not) and applies to candidates who finish the round from then on. */
+function QualificationSettings({ job, stage, nextLabel, published, update }: { job: any; stage: StageView; nextLabel: string; published: boolean; update: (p: Partial<StageView>) => void }) {
+  const qc = useQueryClient();
+  const [local, setLocal] = useState({ t: stage.pass_threshold, auto: stage.auto_qualify, w: stage.weights });
+  const t = published ? local.t : stage.pass_threshold;
+  const auto = published ? local.auto : stage.auto_qualify;
+  const w = (published ? local.w : stage.weights) ?? null;
+  const comps = stage.weight_components;
+  const set = (p: { t?: number | null; auto?: boolean; w?: Record<string, number> | null }) => {
+    if (published) setLocal((l) => ({ t: "t" in p ? p.t! : l.t, auto: p.auto ?? l.auto, w: "w" in p ? p.w! : l.w }));
+    else update({ ...("t" in p ? { pass_threshold: p.t } : {}), ...(p.auto !== undefined ? { auto_qualify: p.auto } : {}), ...("w" in p ? { weights: p.w } : {}) });
+  };
+  const save = useMutation({
+    mutationFn: () => api.put(`/hiring-pipeline/jobs/${job.id}/qualification`, { stages: [{ stage_type: stage.stage_type, pass_threshold: local.t, auto_qualify: local.auto, weights: local.w }] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["pipeline-config", job.id] }),
+  });
+  const effW = w ?? stage.default_weights;
+  const total = effW ? Object.values(effW).reduce((a, b) => a + (Number(b) || 0), 0) : 0;
+  const bad = t != null && (Number.isNaN(t) || t < 0 || t > 100);
+  return (
+    <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50/60 p-4" data-testid="qualification-settings">
+      <div>
+        <p className="text-sm font-semibold text-gray-900">Qualification</p>
+        <p className="text-xs text-gray-500">A candidate moves on only when their finished score for this round is at or above the pass threshold. The score is computed by fixed rules, never decided by an AI model.</p>
+      </div>
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="block text-xs space-y-1">
+          <span className="font-medium text-gray-700">Pass threshold</span>
+          <span className="flex items-center gap-1.5">
+            <input
+              className={inputCls}
+              style={{ width: "5.5rem" }}
+              type="number"
+              min={0}
+              max={100}
+              placeholder="e.g. 70"
+              value={t ?? ""}
+              onChange={(e) => set({ t: e.target.value === "" ? null : Number(e.target.value) })}
+              data-testid="pass-threshold"
+              aria-invalid={bad}
+            />
+            <span className="text-gray-500">% (0 to 100)</span>
+          </span>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-gray-700 pb-2">
+          <input type="checkbox" checked={!!auto} disabled={t == null} onChange={(e) => set({ auto: e.target.checked })} data-testid="auto-qualify" />
+          Automatically qualify candidates who meet this score
+        </label>
+      </div>
+      {bad && <p className="text-xs text-red-700">The threshold must be a number from 0 to 100.</p>}
+      {t == null && <p className="text-xs text-gray-500">No threshold: candidates who finish this round move straight to the next one.</p>}
+      {t != null && !auto && <p className="text-xs text-amber-800">Automatic qualification is off: after this round a person decides whether the candidate moves on.</p>}
+      {comps.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-gray-700">How the round score is made up {stage.default_weights && !w ? "(default weights shown)" : ""}</p>
+          <div className="flex flex-wrap gap-3">
+            {comps.map((c) => (
+              <label key={c} className="text-xs space-y-1">
+                <span className="text-gray-600">{COMPONENT_LABEL[c] ?? c}</span>
+                <span className="flex items-center gap-1">
+                  <input className={inputCls} style={{ width: "4.5rem" }} type="number" min={0} max={100} value={effW?.[c] ?? ""} placeholder="—"
+                    onChange={(e) => set({ w: { ...(effW ?? {}), [c]: e.target.value === "" ? 0 : Number(e.target.value) } })} aria-label={`${COMPONENT_LABEL[c] ?? c} weight`} />
+                  <span className="text-gray-400">%</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <p className={`text-xs ${!effW || Math.abs(total - 100) <= 0.5 ? "text-gray-500" : "text-amber-700"}`}>
+            {effW ? `Weights total ${total}%${Math.abs(total - 100) <= 0.5 ? "" : ": they must add up to 100%"}.` : "Without weights the score is the round's own points-weighted result."}
+            {" "}
+            {w && <button type="button" className="text-blue-700 hover:underline" onClick={() => set({ w: null })}>Use default scoring</button>}
+          </p>
+        </div>
+      )}
+      <p className="text-xs text-gray-600">Next round: <b>{nextLabel}</b></p>
+      {published && (
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || bad} data-testid="save-qualification">Save qualification settings</Button>
+          <span className="text-xs text-gray-500">Applies to candidates who finish this round from now on; earlier results keep the threshold they were judged by.</span>
+          {save.isSuccess && <span className="text-xs font-medium text-emerald-700">✓ Saved</span>}
+        </div>
+      )}
+      <ErrorBox error={save.error} />
+    </div>
   );
 }
 
@@ -489,6 +586,24 @@ export default function HiringProcessPanel({ job }: { job: any }) {
           ) : (
             <div className="space-y-5">
               <StageSettings stage={sel} skills={skills} disabled={published} update={(p) => patch(sel.stage_type, p)} />
+              {sel.stage_type !== "HR_INTERVIEW" ? (
+                <QualificationSettings
+                  key={`${sel.stage_type}-${published}-${sel.pass_threshold}-${sel.auto_qualify}`}
+                  job={job}
+                  stage={sel}
+                  published={published}
+                  nextLabel={(() => {
+                    const on = draft.filter((x) => x.enabled);
+                    const nx = on[on.findIndex((x) => x.stage_type === sel.stage_type) + 1];
+                    return nx ? nx.label : "Final review by your team";
+                  })()}
+                  update={(p) => patch(sel.stage_type, p)}
+                />
+              ) : (
+                <p className="rounded-lg border border-gray-200 bg-gray-50/60 p-3 text-xs text-gray-600">
+                  The HR interview has no score and no pass threshold: a person decides after reading the notes.
+                </p>
+              )}
               {!published && (
                 <div className="space-y-2 border-t border-gray-100 pt-4">
                   {!requirementsReady && <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">Confirm the job requirements (Requirements tab) before preparing this stage.</p>}

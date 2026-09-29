@@ -104,7 +104,7 @@ async def configure_pipeline(db: AsyncSession, job: Job, enabled: list[str], dur
 
 
 async def make_stage_assessment(db: AsyncSession, org: Organization, job: Job, stage_type: str, *, duration: int = 30,
-                                published: bool = True, n: int = 3, token: str = ""):
+                                published: bool = True, n: int = 3, token: str = "", mcq_only: bool = False):
     """A stage-linked assessment whose questions belong to the stage's own domain: aptitude MCQs (no skill), technical MCQ + written, or coding."""
     from app.models.assessments import Assessment, AssessmentQuestion, AssessmentSection
     from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, Visibility
@@ -129,7 +129,7 @@ async def make_stage_assessment(db: AsyncSession, org: Organization, job: Job, s
                                test_cases=[{"input": "[1, 2, 3]", "expected_output": "6"}, {"input": "[10, -4]", "expected_output": "6"}, {"input": "[0]", "expected_output": "0"}]))
     else:
         for i in range(n):
-            if i % 2 == 0:
+            if mcq_only or i % 2 == 0:
                 qs.append(Question(question_text=f"{token} Technical MCQ {i}: which keyword defines a generator?", question_type=QuestionType.MCQ, skill_id=py.id,
                                    options=["return", "yield", "emit"], correct_option_index=1))
             else:

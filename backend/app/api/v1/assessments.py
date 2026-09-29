@@ -349,17 +349,27 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
         if a.assessment_question_id in answers:
             dup_answers.setdefault(a.assessment_question_id, []).append(answers[a.assessment_question_id])
         answers[a.assessment_question_id] = a
+    # Demand-based plan: only the components this attempt actually needs run (MCQ = deterministic check, no model; written = rubric evaluator;
+    # coding = test results). The plan also carries the job context the evaluator receives.
+    from app.agents import orchestrator as orch
+
+    assessment_row = await db.get(Assessment, attempt.assessment_id)
+    stage_row = await pl.stage_for_assessment(db, assessment_row)
+    written_answered = any(q.question_type == QuestionType.TECHNICAL.value and q.aq_id in answers and (answers[q.aq_id].answer_text or "").strip()
+                           for q in fz.by_aq.values())
+    plan = orch.plan_task("score_assessment", question_types={q.question_type for q in fz.by_aq.values()}, has_written_answers=written_answered)
+    jctx = await orch.job_context(db, assessment_row.job_id, stage_type=stage_row.stage_type if stage_row else None) if plan.uses("assessment_evaluator") else None
     # Written answers are scored concurrently (bounded): sequential scoring made submit take ~4 s per written question.
     sem = asyncio.Semaphore(4)
 
     async def _score(q, a):
         async with sem:
             return a.id, await gateway.evaluate_rubric(
-                a.answer_text, {"question": q.question_text, "expected_concepts": q.expected_concepts or [], **(q.rubric or {})},
+                a.answer_text, {"question": q.question_text, "expected_concepts": q.expected_concepts or [], **(q.rubric or {}), "job_context": jctx},
                 RubricEvaluation, related_entity_type="assessment_answer", related_entity_id=a.id)
 
     to_score = [(q, answers[q.aq_id]) for q in fz.by_aq.values()
-                if q.question_type == QuestionType.TECHNICAL.value and q.aq_id in answers and (answers[q.aq_id].answer_text or "").strip()]
+                if plan.uses("assessment_evaluator") and q.question_type == QuestionType.TECHNICAL.value and q.aq_id in answers and (answers[q.aq_id].answer_text or "").strip()]
     try:
         tech_evals = dict(await asyncio.gather(*(_score(q, a) for q, a in to_score)))
     except AIGatewayError as exc:
@@ -424,6 +434,9 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
     job = await db.get(Job, application.job_id)
     stage = await pl.stage_for_assessment(db, await db.get(Assessment, attempt.assessment_id))
     match_due = await pl.complete_stage(db, application, stage, user.id, {"type": "assessment_attempt", "id": str(attempt.id)}) if stage else False
+    for step in plan.steps:
+        step.status = "completed"
+    await orch.record_trace(db, plan, context_type="assessment_attempt", context_id=attempt.id)
     await audit(db, user, "assessment_submitted", "assessment_attempt", attempt.id, organization_id=job.organization_id,
                 metadata={"total_score": round(attempt.total_score, 4)})
     await db.commit()

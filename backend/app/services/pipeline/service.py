@@ -171,14 +171,31 @@ async def complete_stage(db: AsyncSession, application: Application, stage: Hiri
         prog.completed_at = _now()
         if ref:
             prog.result_reference = ref
-    ordered = [(s, p) for s, p in rows]
-    idx = next(i for i, (s, _) in enumerate(ordered) if s.id == stage.id)
-    for s, p in ordered[idx + 1:]:
-        if p.status == S.LOCKED:
-            p.status = S.AVAILABLE
-        break
+    from app.services.pipeline import qualification as Q
+
+    # Deterministic qualification: freeze the round score, apply the threshold. Only a passing gate unlocks the next round.
+    rr = await Q.evaluate_round(db, application, stage)
+    if Q.passes_gate(stage, rr):
+        await Q.unlock_next(db, application.id, stage)
     await db.flush()
     return await sync_status(db, application, actor_id, stage=stage)
+
+
+async def finalize_pending(db: AsyncSession, application_id: uuid.UUID, actor_id: uuid.UUID | None = None) -> bool:
+    """Rounds whose evaluation was still running (or whose scoring provider failed) are evaluated now. Returns True when the pipeline finished."""
+    from app.services.pipeline import qualification as Q
+
+    application = await db.get(Application, application_id)
+    done = False
+    for st, p in await progress_rows(db, application_id):
+        rr = await Q.latest_result(db, application_id, st.id)
+        if p.status == S.COMPLETED and rr is not None and rr.decision == Q.PENDING:
+            rr = await Q.evaluate_round(db, application, st)
+            if Q.passes_gate(st, rr):
+                await Q.unlock_next(db, application_id, st)
+            done = await sync_status(db, application, actor_id, stage=st) or done
+    await db.flush()
+    return done
 
 
 async def skip_stage(db: AsyncSession, application: Application, stage: HiringStage, actor_id: uuid.UUID | None) -> bool:
@@ -224,6 +241,13 @@ async def sync_status(db: AsyncSession, application: Application, actor_id: uuid
                       AS.INTERVIEW_COMPLETED.value}:
         return False
     compute_match = False
+    if await _halted(db, application.id, rows):  # a round ended without qualifying: the candidate waits for a human, not for the next round
+        chain = ([AS.ASSESSMENT_COMPLETED] if status in (AS.ASSESSMENT_PENDING.value, AS.APPLIED.value) else [AS.INTERVIEW_COMPLETED]) + [AS.UNDER_REVIEW]
+        for tgt in chain:
+            await _step(db, application, tgt, actor_id if tgt != AS.UNDER_REVIEW else None,
+                        "round not qualified: hiring team review" if tgt == AS.UNDER_REVIEW else "round completed")
+        await db.flush()
+        return True
     if inter and any_inter_started and (not assess or all_assess_done):
         if assess:
             await _step(db, application, AS.ASSESSMENT_COMPLETED, actor_id, "assessment submitted")
@@ -241,6 +265,19 @@ async def sync_status(db: AsyncSession, application: Application, actor_id: uuid
         await _step(db, application, AS.ASSESSMENT_PENDING, actor_id, "assessment started")
     await db.flush()
     return compute_match
+
+
+async def _halted(db: AsyncSession, application_id: uuid.UUID, rows) -> bool:
+    """True when a finished round did not let the candidate through (not qualified / held / manual) and a later round is still locked."""
+    from app.services.pipeline import qualification as Q
+
+    for i, (st, p) in enumerate(rows):
+        if p.status != S.COMPLETED or i + 1 >= len(rows) or rows[i + 1][1].status != S.LOCKED:
+            continue
+        rr = await Q.latest_result(db, application_id, st.id)
+        if rr is not None and rr.decision != Q.PENDING and not Q.passes_gate(st, rr):
+            return True
+    return False
 
 
 # ------------------------------------------------------------------ views

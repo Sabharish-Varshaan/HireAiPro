@@ -25,6 +25,7 @@ from app.schemas.student_views import is_student
 from app.services.audit import audit
 from app.services.pipeline import service as pl
 from app.services.pipeline import stages as S
+from app.services.pipeline.qualification import COMPONENTS, INTERVIEW_DEFAULT_WEIGHTS
 from app.services.pipeline.service import stage_by_type
 
 router = APIRouter(prefix="/hiring-pipeline", tags=["hiring-pipeline"])
@@ -41,6 +42,9 @@ class StageIn(BaseModel):
     question_count: int | None = Field(default=None, ge=1, le=60)
     proctored: bool = True
     config: dict | None = None
+    pass_threshold: float | None = None  # 0-100 round score needed to qualify; empty = no automatic gate
+    auto_qualify: bool = False
+    weights: dict | None = None  # component weights in percent (see qualification.COMPONENTS)
 
 
 class PipelineIn(BaseModel):
@@ -144,6 +148,8 @@ def _stage_out(st: HiringStage, readiness: dict, order: int) -> dict:
     return {"id": st.id, "stage_type": st.stage_type, "label": S.label(st.stage_type), "order": order, "enabled": st.enabled,
             "required": st.required, "duration_minutes": st.duration_minutes, "question_count": st.question_count, "proctored": st.proctored,
             "status": st.status, "config": st.config or {}, "assessment_id": st.assessment_id, "readiness": readiness,
+            "pass_threshold": st.pass_threshold, "auto_qualify": st.auto_qualify, "weights": st.weights,
+            "weight_components": list(COMPONENTS.get(st.stage_type, ())), "default_weights": INTERVIEW_DEFAULT_WEIGHTS if st.stage_type == S.TECH_INTERVIEW else None,
             "group": "assessment" if S.is_assessment(st.stage_type) else "interview"}
 
 
@@ -208,10 +214,13 @@ async def put_pipeline(job_id: uuid.UUID, payload: PipelineIn, user: User = Depe
     if any(r.status == "PUBLISHED" for r in rows.values()):
         raise HTTPException(409, {"code": "PIPELINE_FROZEN", "message": "The published hiring process is frozen: candidates may already be in it."})
     given = [s.stage_type for s in payload.stages]
+    from app.services.pipeline import qualification as Q
+
     try:
         S.validate_order([t for t in given if next(s for s in payload.stages if s.stage_type == t).enabled])
         cleaned = {s.stage_type: validate_stage(s) for s in payload.stages}
-    except S.PipelineError as exc:
+        qual = {s.stage_type: Q.validate_settings(s.stage_type, s.pass_threshold, s.auto_qualify and s.enabled, s.weights) for s in payload.stages}
+    except (S.PipelineError, Q.SettingsError) as exc:
         raise HTTPException(422, str(exc)) from exc
     if not any(s.enabled for s in payload.stages):
         raise HTTPException(422, "Enable at least one stage")
@@ -228,6 +237,8 @@ async def put_pipeline(job_id: uuid.UUID, payload: PipelineIn, user: User = Depe
         # the technical interview's length comes from its duration unless a count is given, so an empty count must clear the old one
         st.question_count = s_in.question_count if t == S.TECH_INTERVIEW else (s_in.question_count or st.question_count)
         st.config = cleaned[t]
+        st.pass_threshold, st.weights = qual[t]  # applies to candidates who finish the round from now on; earlier results keep the threshold they were judged by
+        st.auto_qualify = bool(s_in.auto_qualify and st.pass_threshold is not None)
         if changed and st.status in ("READY",):
             st.status = "DRAFT"  # the prepared content no longer matches the settings
         if S.is_assessment(t) and st.assessment_id:
@@ -262,6 +273,44 @@ async def generate_stage_content(job_id: uuid.UUID, stage_type: str, user: User 
     await upsert_job(f"stage:{job.id}:{stage_type}", "stage_generation", {"job_id": str(job.id), "stage_type": stage_type})
     generate_stage_task.delay(str(job.id), stage_type, str(user.id))
     return {"status": "PROCESSING", "job_key": f"stage:{job.id}:{stage_type}"}
+
+
+class QualIn(BaseModel):
+    stage_type: str
+    pass_threshold: float | None = None
+    auto_qualify: bool = False
+    weights: dict | None = None
+
+
+class QualificationIn(BaseModel):
+    stages: list[QualIn]
+
+
+@router.put("/jobs/{job_id}/qualification")
+async def set_qualification(job_id: uuid.UUID, payload: QualificationIn, user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
+    """Pass thresholds, automatic qualification and component weights. Allowed after publishing (stage content stays frozen): the change applies to
+    candidates who finish a round from now on. Earlier results keep the threshold they were judged by; re-evaluation is a separate audited action."""
+    from app.services.pipeline import qualification as Q
+
+    job = await get_job_for_member(db, user, job_id)
+    rows = {r.stage_type: r for r in await pl.ensure_pipeline(db, job)}
+    try:
+        cleaned = {}
+        for q in payload.stages:
+            st = rows.get(q.stage_type)
+            if st is None or not st.enabled:
+                raise Q.SettingsError(f"{S.label(q.stage_type)} is not part of this hiring process")
+            cleaned[q.stage_type] = Q.validate_settings(q.stage_type, q.pass_threshold, q.auto_qualify, q.weights)
+    except Q.SettingsError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    for q in payload.stages:
+        st = rows[q.stage_type]
+        st.pass_threshold, st.weights = cleaned[q.stage_type]
+        st.auto_qualify = bool(q.auto_qualify and st.pass_threshold is not None)
+    await audit(db, user, "qualification_settings_updated", "job", job.id, organization_id=job.organization_id,
+                metadata={t: {"threshold": v[0], "weights": v[1]} for t, v in cleaned.items()})
+    await db.commit()
+    return await _pipeline_view(db, job)
 
 
 @router.get("/jobs/{job_id}/generation")
@@ -423,6 +472,8 @@ async def application_journey(application_id: uuid.UUID, user: User = Depends(ge
     rows = await pl.ensure_progress(db, application)
     await db.commit()
     role = _role(user)
+    from app.services.pipeline import qualification as Q
+
     stages = []
     for i, (st, prog) in enumerate(rows):
         item = {"stage_id": st.id, "stage_type": st.stage_type, "label": S.label(st.stage_type), "order": i + 1, "status": prog.status,
@@ -433,6 +484,10 @@ async def application_journey(application_id: uuid.UUID, user: User = Depends(ge
                         assessment_id=st.assessment_id if S.is_assessment(st.stage_type) else None)
         if role == "company":
             item["result"] = await _stage_result(db, application, st, prog)
+        if role != "institution":
+            item.update(pass_threshold=st.pass_threshold if role == "company" else None, auto_qualify=st.auto_qualify if role == "company" else None)
+            nxt = rows[i + 1][0] if i + 1 < len(rows) else None
+            item["round"] = Q.view(st, await Q.latest_result(db, application.id, st.id), S.label(nxt.stage_type) if nxt else None, audience=role)
         stages.append(item)
     current = next((s for s in stages if s["status"] in (S.IN_PROGRESS, S.AVAILABLE)), None)
     return {"application_id": application.id, "status": str(application.status), "stages": stages, "current": current["stage_type"] if current else None}
@@ -457,3 +512,62 @@ async def skip_optional_stage(application_id: uuid.UUID, stage_type: str, user: 
 
         await compute_match_for_application(db, application.id)
     return {"status": "SKIPPED"}
+
+
+# ------------------------------------------------------------------ qualification actions
+class OverrideIn(BaseModel):
+    decision: str  # ADVANCE | HOLD
+    reason: str
+
+
+async def _company_stage(db, user, application_id, stage_type):
+    application = await db.get(Application, application_id)
+    if application is None:
+        raise HTTPException(404, "Application not found")
+    await assert_can_view_application(db, user, application)
+    stage = await stage_by_type(db, application.job_id, stage_type)
+    if stage is None:
+        raise HTTPException(404, "Stage not found")
+    return application, stage
+
+
+@router.post("/applications/{application_id}/stages/{stage_type}/override")
+async def override_round(application_id: uuid.UUID, stage_type: str, payload: OverrideIn, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                         db: AsyncSession = Depends(get_db)):
+    """Advance or hold a candidate against the automatic result. The score, threshold and automatic decision are never edited."""
+    from app.models.enums import ApplicationStatus as AS
+    from app.services.applications.service import transition_application
+    from app.services.pipeline import qualification as Q
+
+    application, stage = await _company_stage(db, user, application_id, stage_type)
+    try:
+        rr = await Q.override(db, application, stage, actor=user, decision=payload.decision, reason=payload.reason)
+    except Q.SettingsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if rr.override_decision == "ADVANCED" and str(application.status) == AS.UNDER_REVIEW.value:
+        rows = await pl.progress_rows(db, application.id)
+        nxt = next((s for s, p in rows if p.status == S.AVAILABLE), None)
+        if nxt is not None:
+            await transition_application(db, application, AS.INTERVIEW_PENDING if S.is_interview(nxt.stage_type) else AS.ASSESSMENT_PENDING, user.id,
+                                         "advanced by recruiter override")
+    await db.commit()
+    rows = await pl.progress_rows(db, application.id)
+    i = next(i for i, (s, _) in enumerate(rows) if s.id == stage.id)
+    return Q.view(stage, rr, S.label(rows[i + 1][0].stage_type) if i + 1 < len(rows) else None, audience="company")
+
+
+@router.post("/applications/{application_id}/stages/{stage_type}/evaluate")
+async def reevaluate_round(application_id: uuid.UUID, stage_type: str, user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
+    """Explicit, audited re-evaluation with the CURRENT settings (adds a new evaluation version; earlier ones are kept)."""
+    from app.services.pipeline import qualification as Q
+
+    application, stage = await _company_stage(db, user, application_id, stage_type)
+    rows = await pl.progress_rows(db, application.id)
+    prog = next((p for s, p in rows if s.id == stage.id), None)
+    if prog is None or prog.status != S.COMPLETED:
+        raise HTTPException(409, "Only a finished round can be evaluated")
+    rr = await Q.evaluate_round(db, application, stage, actor=user, reevaluate=True)
+    if Q.passes_gate(stage, rr):
+        await Q.unlock_next(db, application.id, stage)
+    await db.commit()
+    return Q.view(stage, rr, None, audience="company")

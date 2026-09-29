@@ -229,6 +229,10 @@ async def _evaluate_and_record(turn_id: uuid.UUID, student_id: uuid.UUID, actor_
             return
         t_eval = time.perf_counter()
         itv = await db.get(Interview, turn.interview_id)
+        from app.agents import orchestrator as orch
+
+        plan = orch.plan_task("evaluate_interview_answer", stage_type=itv.stage_type, audio=(turn.answer_source == "voice"))
+        await orch.record_trace(db, plan, context_type="interview_turn", context_id=turn.id)
         if itv.stage_type == S.HR_INTERVIEW:
             # HR: neutral observations only. No rubric score, no skill evidence, no skill recalculation, no effect on the match.
             turn.rubric_evaluation = await evaluate_hr_answer(turn)
@@ -247,6 +251,12 @@ async def _evaluate_and_record(turn_id: uuid.UUID, student_id: uuid.UUID, actor_
         await db.refresh(turn)
         turn.timing = {**(turn.timing or {}), "answer": {"eval_ms": round(eval_ms, 1), "recalc_ms": round((time.perf_counter() - t_rc) * 1000, 1)}}
         await db.commit()
+        if itv.status == "COMPLETED":  # the interview ended while this answer was still being scored: finish its pending qualification now
+            if await pl.finalize_pending(db, itv.application_id, actor_id):
+                await db.commit()
+                await compute_match_for_application(db, itv.application_id)
+            else:
+                await db.commit()
 
 
 def _start_eval(turn_id, student_id, actor_id) -> "asyncio.Task[None]":
