@@ -64,7 +64,7 @@ async def test_institution_opportunity_lifecycle_and_deterministic_eligibility(c
     base = f"/institutions/{ctx['inst']}/opportunities"
     pend = (await client.get(base, headers=ctx["ho"], params={"status": "PENDING"})).json()
     assert [p["job_id"] for p in pend] == [j] and pend[0]["company"]
-    assert "assessment" not in str(pend).lower()  # officer sees the opportunity, not private assessment content
+    assert "question_text" not in str(pend) and "correct_option" not in str(pend)  # a summary of the assessment, never its content
     assert (await client.get(base, headers=ctx["ho2"])).status_code == 404  # other institution
     assert (await client.post(f"{base}/{j}/approve", headers=ctx["ho2"], json={})).status_code == 404
     assert (await client.post(f"{base}/{j}/approve", headers=ctx["hc"], json={})).status_code == 403

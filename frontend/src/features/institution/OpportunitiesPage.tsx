@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api/client";
+import { JobFacts } from "../../components/JobSummary";
+import { EMPLOYMENT_TYPES, WORK_MODES } from "../../lib/posting";
 import { Badge, Button, Card, Empty, ErrorBox, Loading, inputCls } from "../../components/ui";
 import { useInstitution } from "./useInstitution";
 
@@ -18,7 +20,8 @@ function Review({ inst, op, structure }: { inst: any; op: any; structure: any })
   const nameOf = (list: any[], id: string) => list.find((x) => x.id === id)?.name ?? id;
   return (
     <Card title={`${op.title} · ${op.company}`} actions={<Badge>{op.status}</Badge>}>
-      <p className="text-xs text-gray-500">{[op.location, op.employment_type].filter(Boolean).join(" · ")}</p>
+      <JobFacts job={{ display: op.display, number_of_openings: op.number_of_openings }} />
+      {op.assessment && <p className="text-xs text-gray-600" data-testid="op-assessment">Assessment: {op.assessment.question_count} questions ({Object.entries(op.assessment.types).map(([t, n]) => `${n} ${t.toLowerCase()}`).join(", ")}) · {op.assessment.duration_minutes} min</p>}
       {op.description && <p className="text-xs text-gray-600 whitespace-pre-wrap max-h-32 overflow-auto border border-gray-100 rounded p-2">{op.description}</p>}
       <div className="flex flex-wrap gap-1">{op.skills.map((s: any) => <Badge key={s.name} tone={s.type === "required" ? "blue" : "gray"}>{s.name}</Badge>)}</div>
       {op.status === "PENDING" ? (
@@ -48,6 +51,8 @@ function Review({ inst, op, structure }: { inst: any; op: any; structure: any })
 export default function OpportunitiesPage() {
   const { inst, isLoading } = useInstitution();
   const [tab, setTab] = useState<"PENDING" | "APPROVED" | "REJECTED">("PENDING");
+  const [ftype, setFtype] = useState("");
+  const [fmode, setFmode] = useState("");
   const ops = useQuery({ queryKey: ["opportunities", inst?.id, tab], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/opportunities`, { params: { status: tab } }).then((r) => r.data) });
   const structure = useQuery({ queryKey: ["structure", inst?.id], enabled: !!inst, queryFn: () => api.get(`/institutions/${inst.id}/structure`).then((r) => r.data) });
   if (isLoading) return <Loading />;
@@ -56,11 +61,15 @@ export default function OpportunitiesPage() {
     <div className="max-w-4xl space-y-4">
       <h1 className="text-lg font-semibold">Opportunities</h1>
       <p className="text-xs text-gray-500">Companies that target {inst.name} submit jobs here. Only approved jobs reach students, and only the students you allow.</p>
+      <div className="flex flex-wrap gap-2 text-xs items-center" data-testid="op-filters">
+        <select className={`${inputCls} w-52`} value={ftype} onChange={(e) => setFtype(e.target.value)}><option value="">All employment types</option>{EMPLOYMENT_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        <select className={`${inputCls} w-44`} value={fmode} onChange={(e) => setFmode(e.target.value)}><option value="">All work modes</option>{WORK_MODES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+      </div>
       <div className="flex gap-2 text-sm">{(["PENDING", "APPROVED", "REJECTED"] as const).map((k) => (
         <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 rounded-md border ${tab === k ? "bg-gray-900 text-white border-gray-900" : "border-gray-300"}`}>{k[0] + k.slice(1).toLowerCase()}</button>))}</div>
       {ops.isLoading && <Loading />}
       {ops.data?.length === 0 && <Empty>No {tab.toLowerCase()} opportunities.</Empty>}
-      {structure.data && (ops.data ?? []).map((op: any) => <Review key={op.job_id} inst={inst} op={op} structure={structure.data} />)}
+      {structure.data && (ops.data ?? []).filter((op: any) => (!ftype || op.employment_type === ftype) && (!fmode || op.work_mode === fmode)).map((op: any) => <Review key={op.job_id} inst={inst} op={op} structure={structure.data} />)}
     </div>
   );
 }

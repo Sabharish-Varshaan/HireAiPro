@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { JobFacts } from "../../components/JobSummary";
 import { Badge, Button, Card, ErrorBox, Loading, Table, pct } from "../../components/ui";
 
 export default function JobDetailPage() {
@@ -18,7 +19,9 @@ export default function JobDetailPage() {
     <div className="max-w-3xl space-y-4">
       <Link to="/student/jobs" className="text-xs text-gray-500 underline">← Jobs</Link>
       <h1 className="text-lg font-semibold">{j.title}</h1>
-      <p className="text-xs text-gray-500">{j.organization_name} · {j.location ?? "Location not specified"}</p>
+      <p className="text-xs text-gray-500">{j.organization_name}</p>
+      <Card title="Role details"><JobFacts job={j} />
+        {j.display?.conversion && j.conversion_notes && <p className="text-xs text-gray-600">{j.conversion_notes}</p>}</Card>
       <Card title="Requirements">
         <Table head={["Skill", "Type", "Expected level"]}>
           {j.skills.filter((s: any) => s.confirmed).map((s: any) => (
@@ -29,7 +32,9 @@ export default function JobDetailPage() {
       </Card>
       <Card title="Description"><p className="text-sm text-gray-700 whitespace-pre-wrap">{j.description_raw}</p></Card>
       {existing ? <Link className="underline text-sm" to={`/student/applications/${existing.id}`}>You applied — open your application</Link> :
-        <Button onClick={() => apply.mutate()} disabled={apply.isPending}>{apply.isPending ? "Applying…" : "Apply"}</Button>}
+        j.display?.applications_open === false
+          ? <p className="text-sm text-red-600" data-testid="applications-closed">Applications for this role have closed.</p>
+          : <Button onClick={() => apply.mutate()} disabled={apply.isPending}>{apply.isPending ? "Applying…" : "Apply"}</Button>}
       <ErrorBox error={apply.error} />
     </div>
   );

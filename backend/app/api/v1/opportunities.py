@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_roles
 from app.api.tenancy import member_institution_ids
 from app.core.database import get_db
+from app.models.assessments import Assessment, AssessmentVersion
 from app.models.enums import JobStatus, UserRole
 from app.models.institutions import Cohort, Department, Institution
 from app.models.jobs import Job, JobSkill
@@ -66,9 +67,21 @@ async def list_opportunities(institution_id: uuid.UUID, status: str | None = Non
     for job, org in (await db.execute(stmt)).all():
         skills = (await db.execute(select(Skill.canonical_name, JobSkill.requirement_type).join(JobSkill, JobSkill.skill_id == Skill.id)
                                    .where(JobSkill.job_id == job.id, JobSkill.confirmed.is_(True)))).all()
+        version = await db.scalar(select(AssessmentVersion).join(Assessment, Assessment.id == AssessmentVersion.assessment_id)
+                                  .where(Assessment.job_id == job.id).order_by(AssessmentVersion.version_no.desc()))
+        assessment = None
+        if version is not None:  # what the assessment is, never its questions
+            types: dict[str, int] = {}
+            for sec in version.content["sections"]:
+                for item in sec["questions"]:
+                    t = item["question"]["question_type"]
+                    types[t] = types.get(t, 0) + 1
+            assessment = {"question_count": sum(types.values()), "duration_minutes": version.duration_minutes, "types": types}
         out.append({"job_id": job.id, "title": job.title, "company": org, "location": job.location, "employment_type": job.employment_type,
+                    "work_mode": job.work_mode, "display": job.display, "number_of_openings": job.number_of_openings,
                     "description": job.description_raw, "status": job.institution_approval, "note": job.approval_note,
-                    "eligibility": job.eligibility, "skills": [{"name": n, "type": t} for n, t in skills], "submitted_at": job.updated_at})
+                    "eligibility": job.eligibility, "assessment": assessment,
+                    "skills": [{"name": n, "type": str(t)} for n, t in skills], "submitted_at": job.updated_at})
     return out
 
 

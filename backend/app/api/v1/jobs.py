@@ -1,3 +1,4 @@
+import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -16,7 +17,7 @@ from app.models.misc import ProcessingJob
 from app.models.organizations import Organization
 from app.models.skills import Skill
 from app.models.users import User
-from app.schemas.jobs import ConfirmRequirementsRequest, JobCreate, JobOut, JobSkillOut, JobWithSkillsOut
+from app.schemas.jobs import ConfirmRequirementsRequest, JobCreate, JobOut, JobPostingIn, JobSkillOut, JobWithSkillsOut
 from app.services.audit import audit
 from app.services.documents.extraction import extract_text
 from app.services.storage.service import get_storage_service
@@ -24,6 +25,16 @@ from app.services.jobs.visibility import student_can_access_job
 from app.workers.jobs import upsert_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _location_text(cols: dict) -> str | None:
+    parts = [cols.get(k) for k in ("location_city", "location_state", "location_country") if cols.get(k)]
+    return ", ".join(parts) or None
+
+
+def _check_deadline(deadline) -> None:
+    if deadline is not None and deadline <= dt.datetime.now(dt.timezone.utc):
+        raise HTTPException(422, "The application deadline must be in the future")
 
 RECRUITER_ROLES = (UserRole.COMPANY_ADMIN, UserRole.RECRUITER, UserRole.HIRING_MANAGER)
 VISIBLE_TO_STUDENTS = (JobStatus.PUBLISHED,)
@@ -54,11 +65,13 @@ async def create_job(
     db: AsyncSession = Depends(get_db),
 ):
     await require_org_member(db, user, organization_id)
+    cols = payload.columns()
+    _check_deadline(cols.get("application_deadline"))
     job = Job(
-        organization_id=organization_id, created_by_user_id=user.id, title=payload.title,
-        description_raw=payload.description_raw, location=payload.location,
-        employment_type=payload.employment_type, status=JobStatus.DRAFT,
+        organization_id=organization_id, created_by_user_id=user.id, title=payload.title.strip(),
+        description_raw=payload.description_raw, status=JobStatus.DRAFT, **cols,
     )
+    job.location = _location_text(cols) or payload.location
     db.add(job)
     await db.flush()
     await audit(db, user, "job_created", "job", job.id, organization_id=organization_id, metadata={"title": job.title})
@@ -160,6 +173,8 @@ async def get_job(job_id: uuid.UUID, user: User = Depends(get_current_user), db:
 async def list_jobs(
     organization_id: uuid.UUID | None = None,
     status: JobStatus | None = None,
+    employment_type: str | None = None,
+    work_mode: str | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -174,6 +189,10 @@ async def list_jobs(
             stmt = stmt.where(Job.status == status)
     else:
         stmt = stmt.where(Job.status.in_([s.value for s in VISIBLE_TO_STUDENTS]))
+    if employment_type:
+        stmt = stmt.where(Job.employment_type == employment_type)
+    if work_mode:
+        stmt = stmt.where(Job.work_mode == work_mode)
     rows = (await db.execute(stmt.order_by(Job.created_at.desc()))).all()
     if not organization_id and user.role == UserRole.STUDENT:
         rows = [(j, n) for j, n in rows if await student_can_access_job(db, user, j)]
@@ -276,6 +295,28 @@ async def set_distribution(job_id: uuid.UUID, payload: DistributionIn, user: Use
     job.approval_note = job.eligibility = None
     await audit(db, user, "job_distribution_set", "job", job.id, organization_id=job.organization_id,
                 metadata={"type": job.distribution_type, "institution_id": str(job.target_institution_id) if job.target_institution_id else None})
+    await db.commit()
+    await db.refresh(job)
+    return JobOut.model_validate(job)
+
+
+@router.put("/{job_id}/posting", response_model=JobOut)
+async def update_posting(job_id: uuid.UUID, payload: JobPostingIn, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                         db: AsyncSession = Depends(get_db)):
+    """Replaces the posting details. After publishing, only the application deadline and the number of openings may change
+    (extending a deadline); everything else the candidates and the institution approved is frozen."""
+    job = await get_job_for_member(db, user, job_id)
+    cols = payload.columns()
+    _check_deadline(cols.get("application_deadline"))
+    if JobStatus(job.status) == JobStatus.PUBLISHED:
+        frozen = {k: v for k, v in cols.items() if k not in ("application_deadline", "number_of_openings")}
+        if any(getattr(job, k) != v for k, v in frozen.items()):
+            raise HTTPException(409, "This job is published: only the application deadline and the number of openings can change")
+    for k, v in cols.items():
+        setattr(job, k, v)
+    job.location = _location_text(cols) or job.location
+    await audit(db, user, "job_posting_updated", "job", job.id, organization_id=job.organization_id,
+                metadata={"employment_type": job.employment_type, "work_mode": job.work_mode})
     await db.commit()
     await db.refresh(job)
     return JobOut.model_validate(job)

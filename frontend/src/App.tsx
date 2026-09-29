@@ -10,6 +10,7 @@ import CandidatePage from "./features/company/CandidatePage";
 import CompanyJobDetailPage from "./features/company/CompanyJobDetailPage";
 import CompanyJobsPage from "./features/company/CompanyJobsPage";
 import CompanyQuestionsPage from "./features/company/CompanyQuestionsPage";
+import PrivateQuestionBankPage from "./features/company/PrivateQuestionBankPage";
 import QuestionBankPage from "./features/company/QuestionBankPage";
 import InstitutionDashboard from "./features/institution/InstitutionDashboard";
 import OpportunitiesPage from "./features/institution/OpportunitiesPage";
@@ -67,6 +68,7 @@ export default function App() {
         <Route path="jobs/:jobId" element={<CompanyJobDetailPage />} />
         <Route path="applications/:applicationId" element={<CandidatePage />} />
         <Route path="questions" element={<CompanyQuestionsPage />} />
+        <Route path="jobs/:jobId/question-bank" element={<PrivateQuestionBankPage />} />
       </Route>
 
       <Route path="/institution" element={<RequireRole roles={["INSTITUTION_ADMIN", "PLACEMENT_OFFICER", "FACULTY", "DEPARTMENT_HEAD"]}>

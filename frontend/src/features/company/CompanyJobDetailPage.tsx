@@ -3,6 +3,10 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Table, inputCls, pct } from "../../components/ui";
+import { JobFacts } from "../../components/JobSummary";
+import { SkillPicker } from "../../components/SkillPicker";
+import { PostingFormFields } from "../../components/PostingFormFields";
+import { fromJob, problems, toPayload, type PostingForm } from "../../lib/posting";
 
 type Req = {
   id?: string; skill_id: string | null; raw_skill_name: string; canonical_name?: string | null;
@@ -11,31 +15,6 @@ type Req = {
 };
 
 const EDITABLE = ["DRAFT", "SKILLS_EXTRACTED", "REQUIREMENTS_CONFIRMED"];
-
-function SkillPicker({ onPick }: { onPick: (s: { id: string; canonical_name: string }) => void }) {
-  const [q, setQ] = useState("");
-  const { data } = useQuery({
-    queryKey: ["skill-search", q],
-    queryFn: () => api.get("/skills", { params: { q, limit: 8 } }).then((r) => r.data),
-    enabled: q.length >= 2,
-  });
-  return (
-    <div className="relative">
-      <input className={inputCls} placeholder="Search canonical skill…" value={q} onChange={(e) => setQ(e.target.value)} />
-      {q.length >= 2 && data && (
-        <div className="absolute z-10 bg-white border border-gray-200 rounded-md mt-1 w-full shadow-sm max-h-56 overflow-auto">
-          {data.length === 0 && <p className="text-xs text-gray-500 p-2">No canonical skill matches “{q}”.</p>}
-          {data.map((s: { id: string; canonical_name: string; category: string }) => (
-            <button key={s.id} className="block w-full text-left text-sm px-2 py-1 hover:bg-gray-50"
-              onClick={() => { onPick(s); setQ(""); }}>
-              {s.canonical_name} <span className="text-xs text-gray-400">{s.category}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function RequirementsEditor({ job }: { job: any }) {
   const qc = useQueryClient();
@@ -158,6 +137,9 @@ function AssessmentPanel({ job, processing }: { job: any; processing: any }) {
   return (
     <Card title="Assessment" actions={assessment ? <Badge>{assessment.status}</Badge> : null}>
       {!canGenerate && !assessment && <Empty>Confirm the requirements to generate an assessment.</Empty>}
+      {job.status !== "DRAFT" && job.status !== "SKILLS_EXTRACTED" && (
+        <div className="flex items-center gap-2 text-xs"><Link className="underline text-gray-700" to={`/company/jobs/${job.id}/question-bank`} data-testid="private-bank-link">Private question bank</Link>
+          <span className="text-gray-500">import, add or reuse your own questions before AI fills the gaps</span></div>)}
       {gen && (gen.status === "PENDING" || gen.status === "RUNNING") && (
         <p className="text-sm text-amber-700">Generating (Assessment Agent)… this can take a few minutes. Status: {gen.status}</p>
       )}
@@ -301,6 +283,40 @@ function InterviewPlanCard({ job }: { job: any }) {
   );
 }
 
+function PostingCard({ job }: { job: any }) {
+  const qc = useQueryClient();
+  const published = job.status === "PUBLISHED";
+  const [edit, setEdit] = useState(false);
+  const [f, setF] = useState<PostingForm>(() => fromJob(job));
+  const save = useMutation({
+    mutationFn: () => api.put(`/jobs/${job.id}/posting`, toPayload(f)),
+    onSuccess: () => { setEdit(false); qc.invalidateQueries({ queryKey: ["job", job.id] }); qc.invalidateQueries({ queryKey: ["jobs-org"] }); },
+  });
+  const missing = [!job.employment_type && "employment type", !job.work_mode && "work mode",
+    (job.work_mode === "ONSITE" || job.work_mode === "HYBRID") && !(job.location_city && job.location_country) && "city and country"].filter(Boolean);
+  return (
+    <Card title="Posting details" actions={!edit ? <Button variant="secondary" onClick={() => { setF(fromJob(job)); setEdit(true); }}>{published ? "Extend deadline / openings" : "Edit"}</Button> : null}>
+      {!edit ? (
+        <div className="space-y-1" data-testid="posting-summary">
+          <JobFacts job={job} />
+          {missing.length > 0 && <p className="text-xs text-amber-700" data-testid="posting-missing">Add {missing.join(", ")} before publishing.</p>}
+          {!job.display?.headline && !job.display?.compensation && <p className="text-xs text-gray-500">No posting details yet.</p>}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {published && <p className="text-xs text-gray-500">This job is published: only the application deadline and the number of openings can change.</p>}
+          <PostingFormFields f={f} set={(p) => setF((x) => ({ ...x, ...p }))} lockedExceptDeadline={published} />
+          <div className="flex gap-2">
+            <Button onClick={() => save.mutate()} disabled={save.isPending || problems(f).length > 0}>{save.isPending ? "Saving…" : "Save posting details"}</Button>
+            <Button variant="secondary" onClick={() => setEdit(false)}>Cancel</Button>
+          </div>
+          <ErrorBox error={save.error} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
 const APPROVAL_LABEL: Record<string, string> = {
   NOT_REQUIRED: "Not submitted yet (goes to the placement officer when you publish)", PENDING: "Waiting for the placement officer's approval",
   APPROVED: "Approved: visible to eligible students", REJECTED: "Rejected by the placement officer" };
@@ -402,6 +418,7 @@ export default function CompanyJobDetailPage() {
         </Card>
       )}
 
+      <PostingCard key={job.updated_at ?? job.id + job.status} job={job} />
       <DistributionCard job={job} />
       {job.skills.length > 0 || job.status !== "DRAFT" ? <RequirementsEditor job={job} /> : null}
       {job.status !== "DRAFT" && job.status !== "SKILLS_EXTRACTED" && <AssessmentPanel job={job} processing={processing} />}

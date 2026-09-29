@@ -4,6 +4,7 @@ import uuid
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,6 +110,12 @@ async def publish_assessment(assessment_id: uuid.UUID, user: User = Depends(requ
     n = len((await db.scalars(select(AssessmentQuestion.id).where(AssessmentQuestion.assessment_id == assessment.id))).all())
     if n == 0:
         raise HTTPException(409, "Assessment has no questions")
+    from app.services.jobs.posting import missing_for_publish
+
+    missing = missing_for_publish(job)
+    if missing:
+        raise HTTPException(409, {"code": "POSTING_INCOMPLETE", "missing": missing,
+                                  "message": "Complete the posting details (employment type, work mode, location) before publishing."})
     await ver.ensure_version(db, assessment, user.id)  # freeze content, answer keys and hidden tests
     assessment.status = "PUBLISHED"
     job.status = JobStatus.PUBLISHED
@@ -449,3 +456,63 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
     if student:
         return {"attempt": _student_attempt(attempt), "answers": out}
     return {"attempt": AttemptOut.model_validate(attempt), "answers": out}
+
+
+class AttachQuestion(BaseModel):
+    question_id: uuid.UUID
+
+
+@router.post("/{assessment_id}/questions")
+async def attach_question(assessment_id: uuid.UUID, payload: AttachQuestion, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                          db: AsyncSession = Depends(get_db)):
+    """Reuse one of the company's own (or an approved platform) questions in a DRAFT assessment. The question stays owned by its company;
+    this only creates the usage row. Published assessments are frozen and cannot change."""
+    assessment = await db.get(Assessment, assessment_id)
+    if assessment is None:
+        raise HTTPException(404, "Assessment not found")
+    job = await get_job_for_member(db, user, assessment.job_id)
+    if assessment.status == "PUBLISHED":
+        raise HTTPException(409, "A published assessment is frozen; questions can no longer be added")
+    q = await db.get(Question, payload.question_id)
+    from app.models.enums import QuestionStatus, Visibility
+
+    own = q is not None and q.organization_id == job.organization_id
+    platform = q is not None and q.visibility == Visibility.PLATFORM_PUBLIC and QuestionStatus(q.status) in (QuestionStatus.APPROVED, QuestionStatus.ACTIVE)
+    if q is None or not (own or platform):
+        raise HTTPException(404, "Question not found")  # another company's private question is indistinguishable from a missing one
+    if own and QuestionStatus(q.status) not in (QuestionStatus.VALIDATED, QuestionStatus.APPROVED, QuestionStatus.ACTIVE):
+        raise HTTPException(409, "This question is not validated yet")
+    if await db.scalar(select(AssessmentQuestion.id).where(AssessmentQuestion.assessment_id == assessment_id, AssessmentQuestion.question_id == q.id)):
+        raise HTTPException(409, "Already in this assessment")
+    from app.models.skills import Skill
+
+    skill = await db.get(Skill, q.skill_id)
+    sec = await db.scalar(select(AssessmentSection).where(AssessmentSection.assessment_id == assessment_id, AssessmentSection.title == skill.canonical_name))
+    if sec is None:
+        n = len((await db.scalars(select(AssessmentSection.id).where(AssessmentSection.assessment_id == assessment_id))).all())
+        sec = AssessmentSection(assessment_id=assessment_id, title=skill.canonical_name, order_index=n)
+        db.add(sec)
+        await db.flush()
+    order = len((await db.scalars(select(AssessmentQuestion.id).where(AssessmentQuestion.assessment_id == assessment_id))).all())
+    aq = AssessmentQuestion(assessment_id=assessment_id, section_id=sec.id, question_id=q.id, order_index=order, points=(q.import_meta or {}).get("max_score") or 1.0)
+    db.add(aq)
+    await audit(db, user, "assessment_question_attached", "assessment", assessment_id, organization_id=job.organization_id, metadata={"question_id": str(q.id)})
+    await db.commit()
+    return {"assessment_question_id": aq.id, "question_id": q.id}
+
+
+@router.delete("/{assessment_id}/questions/{question_id}")
+async def detach_question(assessment_id: uuid.UUID, question_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                          db: AsyncSession = Depends(get_db)):
+    assessment = await db.get(Assessment, assessment_id)
+    if assessment is None:
+        raise HTTPException(404, "Assessment not found")
+    await get_job_for_member(db, user, assessment.job_id)
+    if assessment.status == "PUBLISHED":
+        raise HTTPException(409, "A published assessment is frozen")
+    aq = await db.scalar(select(AssessmentQuestion).where(AssessmentQuestion.assessment_id == assessment_id, AssessmentQuestion.question_id == question_id))
+    if aq is None:
+        raise HTTPException(404, "Question is not in this assessment")
+    await db.delete(aq)
+    await db.commit()
+    return {"removed": True}

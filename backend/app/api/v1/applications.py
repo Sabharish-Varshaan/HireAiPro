@@ -1,3 +1,4 @@
+import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -58,6 +59,8 @@ async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_
     existing = await db.scalar(select(Application).where(Application.job_id == job.id, Application.student_id == me.id))
     if existing:
         return await _enrich(db, existing)
+    if job.application_deadline is not None and dt.datetime.now(dt.timezone.utc) > job.application_deadline:  # server-authoritative
+        raise HTTPException(409, {"code": "APPLICATIONS_CLOSED", "message": "Applications for this job have closed."})
     application = Application(job_id=job.id, student_id=me.id, status=ApplicationStatus.APPLIED)
     db.add(application)
     await db.flush()

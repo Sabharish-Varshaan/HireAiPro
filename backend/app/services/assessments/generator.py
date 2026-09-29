@@ -251,6 +251,7 @@ async def generate_missing_question(
         knowledge_source_ids=sorted({r["document_id"] for r in refs if r.get("document_id")}),
         validation_report=result.report(),
         generation_key=gkey,
+        provenance="AI_GENERATED_COMPANY_PRIVATE",  # generated for this company's JD/context: private to it, never auto-shared
         **fields,
     )
     db.add(q)

@@ -20,7 +20,7 @@ from app.models.matching import Match
 from app.models.misc import AgentRun, AIRun, AuditEvent, Notification, ProcessingJob
 from app.models.organizations import Organization, OrganizationMember
 from app.models.proctoring import ProctoringEvent, ProctoringSession
-from app.models.questions import Question, QuestionBank, QuestionSkill, QuestionSource
+from app.models.questions import Question, QuestionBank, QuestionImportBatch, QuestionSkill, QuestionSource
 from app.models.skills import Skill, SkillAlias, SkillRelationship
 from app.models.students import (
     StudentCertification,

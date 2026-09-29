@@ -79,7 +79,7 @@ async def create_question(
 ):
     org, platform = await _resolve_owner(db, user, payload.organization_id)
     report = await importer.import_rows(db, [payload.model_dump(exclude={"organization_id"})], organization_id=org,
-                                        created_by=user.id, platform=platform)
+                                        created_by=user.id, platform=platform, provenance="COMPANY_MANUAL")
     return await _finish_import(db, user, report, org, platform, "manual")
 
 

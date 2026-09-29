@@ -131,6 +131,7 @@ async def import_rows(
     organization_id: uuid.UUID | None,
     created_by: uuid.UUID,
     platform: bool = False,
+    provenance: str = "COMPANY_IMPORT",
 ) -> ImportReport:
     report = ImportReport()
     scope = TenantScope(organization_id=organization_id)
@@ -178,7 +179,7 @@ async def import_rows(
             visibility=Visibility.PLATFORM_PUBLIC if platform else Visibility.COMPANY_PRIVATE,
             status=QS.VALIDATED if result.ok else QS.DRAFT,
             content_hash=content_hash(row.question_text), validation_report=result.report(),
-            created_by_user_id=created_by,
+            created_by_user_id=created_by, provenance=None if platform else provenance,
         )
         db.add(q)
         await db.flush()

@@ -45,6 +45,7 @@ class QuestionOut(BaseModel):
     validation_report: dict | None = None
     model_version: str | None = None
     skill_name: str | None = None
+    provenance: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

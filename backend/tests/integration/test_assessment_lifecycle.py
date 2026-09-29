@@ -20,6 +20,7 @@ async def ctx():
     async with AsyncSessionLocal() as db:
         org, rec, hc = await make_company(db, "LifeCo")
         job = await make_job(db, org, rec, [("Python", "required", 0.6, 1.0)])
+        job.employment_type, job.work_mode = "FULL_TIME", "REMOTE"  # publishing requires the posting basics
         st, _, hs = await make_student(db)
         app_ = await make_application(db, job, st)
         a, aqs, qs = await _published_assessment(db, org, job)

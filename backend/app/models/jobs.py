@@ -1,6 +1,9 @@
 import uuid
 
-from sqlalchemy import Float, ForeignKey, String, Text
+import datetime as dt
+from decimal import Decimal
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +29,34 @@ class Job(Base, UUIDPk, TimestampMixin):
     status: Mapped[JobStatus] = mapped_column(String, default=JobStatus.DRAFT)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
     employment_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Posting details (docs/JOB_POSTING.md). employment_type/location predate this and are reused: employment_type now holds a machine
+    # value (FULL_TIME ...), `location` is a derived display string. Money is stored as absolute amounts in a generic currency/period model.
+    work_mode: Mapped[str | None] = mapped_column(String, nullable=True)  # ONSITE | HYBRID | REMOTE (null = recruiter has not chosen)
+    location_city: Mapped[str | None] = mapped_column(String, nullable=True)
+    location_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    location_country: Mapped[str | None] = mapped_column(String, nullable=True)
+    experience_level: Mapped[str | None] = mapped_column(String, nullable=True)  # FRESHER | EXPERIENCED
+    experience_min_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    experience_max_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    number_of_openings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    application_deadline: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    compensation_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    compensation_min: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    compensation_max: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    compensation_period: Mapped[str | None] = mapped_column(String, nullable=True)  # YEAR | MONTH | HOUR | FIXED
+    compensation_type: Mapped[str | None] = mapped_column(String, nullable=True)  # SALARY | STIPEND | CTC | HOURLY | UNPAID
+    internship_duration_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    internship_duration_unit: Mapped[str | None] = mapped_column(String, nullable=True)  # WEEK | MONTH
+    conversion_guaranteed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    conversion_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_time_compensation_min: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)  # annual, compensation_currency
+    full_time_compensation_max: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    @property
+    def display(self) -> dict:
+        from app.services.jobs.posting import display
+
+        return display(self)
+
     # Distribution (docs/OPPORTUNITIES.md): OPEN_MARKET jobs are visible to every student; INSTITUTION jobs only after the
     # target institution's placement officer approves them, and then only to students matching `eligibility`.
     distribution_type: Mapped[str] = mapped_column(String, default="OPEN_MARKET", server_default="OPEN_MARKET")
