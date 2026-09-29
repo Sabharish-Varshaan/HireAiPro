@@ -320,3 +320,24 @@ async def test_builder_uses_the_companys_own_questions_before_any_ai_and_never_a
         await AA._company(dB, 0)
         assert not set(wkB.picked.get(QuestionType.MCQ, [])) & set(picked)
         assert not any(str(q.organization_id) == w["oa"] for q in (await db.scalars(select(Question).where(Question.id.in_(wkB.picked.get(QuestionType.MCQ, []) or [uuid.uuid4()])))).all())
+
+
+@pytest.mark.asyncio
+async def test_reuse_creates_the_draft_assessment_on_demand_and_is_tenant_safe(client, w):
+    async with AsyncSessionLocal() as db:
+        oa = await db.get(__import__("app.models.organizations", fromlist=["Organization"]).Organization, w["oa"])
+        j3 = await make_job(db, oa, w["ra"], [("Python", "required", 0.6, 1.0)], status=JobStatus.REQUIREMENTS_CONFIRMED)
+        await db.commit()
+        j3id = str(j3.id)
+    b = (await upload(client, w["ha"], w["j1"], sheet([mcq("Which Python operator checks membership in a collection quickly here?", eid="RU")]))).json()
+    await client.post(f"/question-imports/{b['id']}/confirm", headers=w["ha"])
+    async with AsyncSessionLocal() as db:
+        qid = str((await db.scalar(select(Question).where(Question.import_batch_id == b["id"]))).id)
+        assert await db.scalar(select(func.count()).select_from(Assessment).where(Assessment.job_id == j3id)) == 0
+    r = await client.post(f"/assessments/jobs/{j3id}/questions", headers=w["ha"], json={"question_id": qid})
+    assert r.status_code == 200
+    async with AsyncSessionLocal() as db:
+        assert await db.scalar(select(func.count()).select_from(Assessment).where(Assessment.job_id == j3id, Assessment.status == "DRAFT")) == 1
+        assert await db.scalar(select(func.count()).select_from(Question).where(Question.import_batch_id == b["id"])) == 1  # same record, new usage
+    assert (await client.post(f"/assessments/jobs/{j3id}/questions", headers=w["hb"], json={"question_id": qid})).status_code in (403, 404)  # B cannot use A's job
+    assert (await client.post(f"/assessments/jobs/{w['jb']}/questions", headers=w["hb"], json={"question_id": qid})).status_code == 404  # nor A's question

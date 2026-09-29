@@ -160,12 +160,11 @@ async def get_job(job_id: uuid.UUID, user: User = Depends(get_current_user), db:
     job = await db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    if user.role == UserRole.STUDENT or job.organization_id not in await member_org_ids(db, user):
-        if user.role == UserRole.STUDENT:
-            if not await student_can_access_job(db, user, job):
-                raise HTTPException(404, "Job not found")
-        elif user.role != UserRole.PLATFORM_ADMIN and JobStatus(job.status) not in VISIBLE_TO_STUDENTS:
+    if user.role == UserRole.STUDENT:
+        if not await student_can_access_job(db, user, job):
             raise HTTPException(404, "Job not found")
+    elif user.role != UserRole.PLATFORM_ADMIN and job.organization_id not in await member_org_ids(db, user):
+        raise HTTPException(404, "Job not found")  # another company's job (published or not) is not readable by this company or by staff
     return await _with_skills(db, job)
 
 
@@ -197,7 +196,8 @@ async def list_jobs(
     if not organization_id and user.role == UserRole.STUDENT:
         rows = [(j, n) for j, n in rows if await student_can_access_job(db, user, j)]
     elif not organization_id and user.role != UserRole.PLATFORM_ADMIN:
-        rows = [(j, n) for j, n in rows if j.distribution_type != "INSTITUTION"]  # unapproved campus jobs stay private to their owner
+        mine = await member_org_ids(db, user)
+        rows = [(j, n) for j, n in rows if j.organization_id in mine]  # a recruiter's unfiltered list is their own company's jobs only
     out = []
     for job, org_name in rows:
         item = JobOut.model_validate(job)

@@ -462,18 +462,13 @@ class AttachQuestion(BaseModel):
     question_id: uuid.UUID
 
 
-@router.post("/{assessment_id}/questions")
-async def attach_question(assessment_id: uuid.UUID, payload: AttachQuestion, user: User = Depends(require_roles(*RECRUITER_ROLES)),
-                          db: AsyncSession = Depends(get_db)):
+async def _attach(db: AsyncSession, user: User, assessment: Assessment, job: Job, question_id: uuid.UUID) -> dict:
     """Reuse one of the company's own (or an approved platform) questions in a DRAFT assessment. The question stays owned by its company;
     this only creates the usage row. Published assessments are frozen and cannot change."""
-    assessment = await db.get(Assessment, assessment_id)
-    if assessment is None:
-        raise HTTPException(404, "Assessment not found")
-    job = await get_job_for_member(db, user, assessment.job_id)
     if assessment.status == "PUBLISHED":
         raise HTTPException(409, "A published assessment is frozen; questions can no longer be added")
-    q = await db.get(Question, payload.question_id)
+    assessment_id = assessment.id
+    q = await db.get(Question, question_id)
     from app.models.enums import QuestionStatus, Visibility
 
     own = q is not None and q.organization_id == job.organization_id
@@ -498,7 +493,30 @@ async def attach_question(assessment_id: uuid.UUID, payload: AttachQuestion, use
     db.add(aq)
     await audit(db, user, "assessment_question_attached", "assessment", assessment_id, organization_id=job.organization_id, metadata={"question_id": str(q.id)})
     await db.commit()
-    return {"assessment_question_id": aq.id, "question_id": q.id}
+    return {"assessment_question_id": aq.id, "question_id": q.id, "assessment_id": assessment_id}
+
+
+@router.post("/{assessment_id}/questions")
+async def attach_question(assessment_id: uuid.UUID, payload: AttachQuestion, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                          db: AsyncSession = Depends(get_db)):
+    assessment = await db.get(Assessment, assessment_id)
+    if assessment is None:
+        raise HTTPException(404, "Assessment not found")
+    job = await get_job_for_member(db, user, assessment.job_id)
+    return await _attach(db, user, assessment, job, payload.question_id)
+
+
+@router.post("/jobs/{job_id}/questions")
+async def attach_question_to_job(job_id: uuid.UUID, payload: AttachQuestion, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                                 db: AsyncSession = Depends(get_db)):
+    """Same as above, creating the job's draft assessment first if it has none (so questions can be reused before any generation)."""
+    job = await get_job_for_member(db, user, job_id)
+    assessment = await db.scalar(select(Assessment).where(Assessment.job_id == job_id).order_by(Assessment.created_at.desc()))
+    if assessment is None:
+        assessment = Assessment(job_id=job_id, title=f"{job.title} Assessment", status="DRAFT")
+        db.add(assessment)
+        await db.flush()
+    return await _attach(db, user, assessment, job, payload.question_id)
 
 
 @router.delete("/{assessment_id}/questions/{question_id}")

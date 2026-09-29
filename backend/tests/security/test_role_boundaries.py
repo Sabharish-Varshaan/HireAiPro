@@ -88,3 +88,25 @@ async def test_student_cannot_set_own_score_and_cannot_touch_another_students_at
         assert r.status_code in (403, 404), (path, r.status_code)
     # and cannot start an attempt for someone else's application
     assert (await client.post(f"/assessments/{w['a']}/attempts", headers=w["hs2"], json={"application_id": w["app1"]})).status_code in (403, 404)
+
+
+@pytest.mark.asyncio
+async def test_another_company_or_staff_cannot_read_a_company_job_even_when_published(client, world):
+    """Found by the Chrome cross-company test: any non-student could read ANY published job, including one still awaiting institution approval."""
+    w = world
+    async with AsyncSessionLocal() as db:
+        from app.models.jobs import Job
+        j = await db.get(Job, w["job_a"])
+        j.distribution_type, j.target_institution_id, j.institution_approval = "INSTITUTION", w["inst_a"], "PENDING"
+        await db.commit()
+    assert (await client.get(f"/jobs/{w['job_a']}", headers=w["hc_a"])).status_code == 200            # owner
+    assert (await client.get(f"/jobs/{w['job_a']}", headers=w["hc_b"])).status_code == 404            # competitor
+    assert (await client.get(f"/jobs/{w['job_a']}", headers=w["ho_b"])).status_code == 404            # other institution's officer
+    assert w["job_a"] not in {x["id"] for x in (await client.get("/jobs", headers=w["hc_b"])).json()}  # unfiltered list is own company only
+    assert w["job_a"] in {x["id"] for x in (await client.get("/jobs", headers=w["hc_a"])).json()}
+    async with AsyncSessionLocal() as db:  # open-market published job: still not readable by another company
+        j = await db.get(Job, w["job_a"])
+        j.distribution_type, j.target_institution_id, j.institution_approval = "OPEN_MARKET", None, "NOT_REQUIRED"
+        await db.commit()
+    assert (await client.get(f"/jobs/{w['job_a']}", headers=w["hc_b"])).status_code == 404
+    assert (await client.get(f"/jobs/{w['job_a']}", headers=w["hs3"])).status_code == 200            # students still see open-market jobs
