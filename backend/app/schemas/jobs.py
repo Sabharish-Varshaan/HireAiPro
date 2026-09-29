@@ -37,6 +37,10 @@ class JobOut(BaseModel):
     status: JobStatus
     location: str | None
     employment_type: str | None
+    distribution_type: str = "OPEN_MARKET"
+    institution_approval: str = "NOT_REQUIRED"
+    target_institution_id: uuid.UUID | None = None
+    target_institution_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

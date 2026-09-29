@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, require_roles
 from app.api.tenancy import assert_can_view_application, assert_can_view_student, get_job_for_member, get_student_profile, require_org_member
 from app.core.database import get_db
+from app.services.jobs.visibility import student_can_access_job
 from app.models.applications import Application, ApplicationStatusHistory
 from app.models.enums import ApplicationStatus, JobStatus, UserRole
 from app.models.jobs import Job
@@ -52,7 +53,7 @@ async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_
         db.add(me)
         await db.flush()
     job = await db.get(Job, payload.job_id)
-    if job is None or JobStatus(job.status) != JobStatus.PUBLISHED:
+    if job is None or not await student_can_access_job(db, user, job):
         raise HTTPException(404, "Job not found or not open for applications")
     existing = await db.scalar(select(Application).where(Application.job_id == job.id, Application.student_id == me.id))
     if existing:

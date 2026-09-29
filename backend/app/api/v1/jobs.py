@@ -10,6 +10,7 @@ from app.api.tenancy import get_job_for_member, member_org_ids, require_org_memb
 from app.core.database import get_db
 from app.models.documents import Document
 from app.models.enums import JobStatus, UserRole, Visibility
+from app.models.institutions import Institution
 from app.models.jobs import Job, JobSkill
 from app.models.misc import ProcessingJob
 from app.models.organizations import Organization
@@ -19,6 +20,7 @@ from app.schemas.jobs import ConfirmRequirementsRequest, JobCreate, JobOut, JobS
 from app.services.audit import audit
 from app.services.documents.extraction import extract_text
 from app.services.storage.service import get_storage_service
+from app.services.jobs.visibility import student_can_access_job
 from app.workers.jobs import upsert_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -38,6 +40,9 @@ async def _with_skills(db: AsyncSession, job: Job) -> JobWithSkillsOut:
     out.skills = [JobSkillOut.model_validate(r).model_copy(update={"canonical_name": names.get(r.skill_id)}) for r in rows]
     org = await db.get(Organization, job.organization_id)
     out.organization_name = org.name if org else None
+    if job.target_institution_id:
+        inst = await db.get(Institution, job.target_institution_id)
+        out.target_institution_name = inst.name if inst else None
     return out
 
 
@@ -143,7 +148,10 @@ async def get_job(job_id: uuid.UUID, user: User = Depends(get_current_user), db:
     if job is None:
         raise HTTPException(404, "Job not found")
     if user.role == UserRole.STUDENT or job.organization_id not in await member_org_ids(db, user):
-        if user.role != UserRole.PLATFORM_ADMIN and JobStatus(job.status) not in VISIBLE_TO_STUDENTS:
+        if user.role == UserRole.STUDENT:
+            if not await student_can_access_job(db, user, job):
+                raise HTTPException(404, "Job not found")
+        elif user.role != UserRole.PLATFORM_ADMIN and JobStatus(job.status) not in VISIBLE_TO_STUDENTS:
             raise HTTPException(404, "Job not found")
     return await _with_skills(db, job)
 
@@ -167,6 +175,10 @@ async def list_jobs(
     else:
         stmt = stmt.where(Job.status.in_([s.value for s in VISIBLE_TO_STUDENTS]))
     rows = (await db.execute(stmt.order_by(Job.created_at.desc()))).all()
+    if not organization_id and user.role == UserRole.STUDENT:
+        rows = [(j, n) for j, n in rows if await student_can_access_job(db, user, j)]
+    elif not organization_id and user.role != UserRole.PLATFORM_ADMIN:
+        rows = [(j, n) for j, n in rows if j.distribution_type != "INSTITUTION"]  # unapproved campus jobs stay private to their owner
     out = []
     for job, org_name in rows:
         item = JobOut.model_validate(job)
@@ -237,3 +249,33 @@ async def confirm_requirements(
     await db.commit()
     await db.refresh(job)
     return await _with_skills(db, job)
+
+
+class DistributionIn(BaseModel):
+    distribution_type: str  # OPEN_MARKET | INSTITUTION
+    institution_id: uuid.UUID | None = None
+
+
+@router.put("/{job_id}/distribution", response_model=JobOut)
+async def set_distribution(job_id: uuid.UUID, payload: DistributionIn, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                           db: AsyncSession = Depends(get_db)):
+    """Open market, or a partner institution whose placement officer must approve the opportunity."""
+    job = await get_job_for_member(db, user, job_id)
+    if payload.distribution_type not in ("OPEN_MARKET", "INSTITUTION"):
+        raise HTTPException(422, "distribution_type must be OPEN_MARKET or INSTITUTION")
+    if job.institution_approval == "APPROVED":
+        raise HTTPException(409, "This opportunity was already approved by the institution and can no longer be re-targeted")
+    published = JobStatus(job.status) == JobStatus.PUBLISHED
+    if payload.distribution_type == "INSTITUTION":
+        if payload.institution_id is None or await db.get(Institution, payload.institution_id) is None:
+            raise HTTPException(422, "Choose an institution")
+        job.distribution_type, job.target_institution_id = "INSTITUTION", payload.institution_id
+        job.institution_approval = "PENDING" if published else "NOT_REQUIRED"
+    else:
+        job.distribution_type, job.target_institution_id, job.institution_approval = "OPEN_MARKET", None, "NOT_REQUIRED"
+    job.approval_note = job.eligibility = None
+    await audit(db, user, "job_distribution_set", "job", job.id, organization_id=job.organization_id,
+                metadata={"type": job.distribution_type, "institution_id": str(job.target_institution_id) if job.target_institution_id else None})
+    await db.commit()
+    await db.refresh(job)
+    return JobOut.model_validate(job)

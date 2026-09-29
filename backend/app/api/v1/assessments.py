@@ -87,6 +87,8 @@ async def publish_assessment(assessment_id: uuid.UUID, user: User = Depends(requ
         raise HTTPException(409, "Assessment has no questions")
     assessment.status = "PUBLISHED"
     job.status = JobStatus.PUBLISHED
+    if job.distribution_type == "INSTITUTION" and job.institution_approval in ("NOT_REQUIRED", "REJECTED"):
+        job.institution_approval = "PENDING"  # goes to the placement officer's queue; students cannot see it yet
     await audit(db, user, "assessment_published", "assessment", assessment.id, organization_id=job.organization_id,
                 metadata={"questions": n})
     await db.commit()

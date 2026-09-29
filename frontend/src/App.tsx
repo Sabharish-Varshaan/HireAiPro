@@ -12,6 +12,7 @@ import CompanyJobsPage from "./features/company/CompanyJobsPage";
 import CompanyQuestionsPage from "./features/company/CompanyQuestionsPage";
 import QuestionBankPage from "./features/company/QuestionBankPage";
 import InstitutionDashboard from "./features/institution/InstitutionDashboard";
+import OpportunitiesPage from "./features/institution/OpportunitiesPage";
 import StructurePage from "./features/institution/StructurePage";
 import StudentsPage from "./features/institution/StudentsPage";
 import InstitutionStudentPage from "./features/institution/InstitutionStudentPage";
@@ -70,10 +71,11 @@ export default function App() {
 
       <Route path="/institution" element={<RequireRole roles={["INSTITUTION_ADMIN", "PLACEMENT_OFFICER", "FACULTY", "DEPARTMENT_HEAD"]}>
         <AppShell nav={[{ to: "/institution", label: "Overview" }, { to: "/institution/students", label: "Students" },
-          { to: "/institution/structure", label: "Academic structure" }]} /></RequireRole>}>
+          { to: "/institution/structure", label: "Academic structure" }, { to: "/institution/opportunities", label: "Opportunities" }]} /></RequireRole>}>
         <Route index element={<InstitutionDashboard />} />
         <Route path="students" element={<StudentsPage />} />
         <Route path="structure" element={<StructurePage />} />
+        <Route path="opportunities" element={<OpportunitiesPage />} />
         <Route path="institutions/:institutionId/students/:studentId" element={<InstitutionStudentPage />} />
       </Route>
 

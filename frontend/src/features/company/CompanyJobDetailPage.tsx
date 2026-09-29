@@ -240,6 +240,36 @@ function Candidates({ job }: { job: any }) {
   );
 }
 
+const APPROVAL_LABEL: Record<string, string> = {
+  NOT_REQUIRED: "Not submitted yet (goes to the placement officer when you publish)", PENDING: "Waiting for the placement officer's approval",
+  APPROVED: "Approved: visible to eligible students", REJECTED: "Rejected by the placement officer" };
+
+function DistributionCard({ job }: { job: any }) {
+  const qc = useQueryClient();
+  const dir = useQuery({ queryKey: ["institution-directory"], queryFn: () => api.get("/institutions/directory").then((r) => r.data) });
+  const [type, setType] = useState<string>(job.distribution_type ?? "OPEN_MARKET");
+  const [inst, setInst] = useState<string>(job.target_institution_id ?? "");
+  const save = useMutation({
+    mutationFn: () => api.put(`/jobs/${job.id}/distribution`, { distribution_type: type, institution_id: type === "INSTITUTION" ? inst : null }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job", job.id] }),
+  });
+  const locked = job.institution_approval === "APPROVED";
+  return (
+    <Card title="Distribution" actions={job.distribution_type === "INSTITUTION" ? <Badge>{job.institution_approval}</Badge> : <Badge>OPEN MARKET</Badge>}>
+      <div className="flex gap-2 items-center text-sm">
+        <select className={inputCls} value={type} disabled={locked} onChange={(e) => setType(e.target.value)} data-testid="distribution-type">
+          <option value="OPEN_MARKET">Open market: every student</option><option value="INSTITUTION">Partner institution (needs approval)</option></select>
+        {type === "INSTITUTION" && (
+          <select className={inputCls} value={inst} disabled={locked} onChange={(e) => setInst(e.target.value)} data-testid="distribution-institution">
+            <option value="">Choose institution…</option>{(dir.data ?? []).map((i: any) => <option key={i.id} value={i.id}>{i.name}</option>)}</select>)}
+        <Button variant="secondary" onClick={() => save.mutate()} disabled={locked || save.isPending || (type === "INSTITUTION" && !inst)}>Save</Button>
+      </div>
+      {job.distribution_type === "INSTITUTION" && <p className="text-xs text-gray-600" data-testid="approval-state">{job.target_institution_name}: {APPROVAL_LABEL[job.institution_approval]}</p>}
+      <ErrorBox error={save.error} />
+    </Card>
+  );
+}
+
 export default function CompanyJobDetailPage() {
   const { jobId } = useParams();
   const qc = useQueryClient();
@@ -311,6 +341,7 @@ export default function CompanyJobDetailPage() {
         </Card>
       )}
 
+      <DistributionCard job={job} />
       {job.skills.length > 0 || job.status !== "DRAFT" ? <RequirementsEditor job={job} /> : null}
       {job.status !== "DRAFT" && job.status !== "SKILLS_EXTRACTED" && <AssessmentPanel job={job} processing={processing} />}
       {job.status === "PUBLISHED" && <Candidates job={job} />}
