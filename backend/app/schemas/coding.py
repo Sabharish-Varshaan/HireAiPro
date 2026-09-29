@@ -10,6 +10,14 @@ class CodingSubmitRequest(BaseModel):
     source_code: str
 
 
+class CodingRunRequest(BaseModel):
+    assessment_answer_id: uuid.UUID
+    question_id: uuid.UUID
+    language: str
+    source_code: str
+    custom_input: str | None = None
+
+
 class CodingResultOut(BaseModel):
     submission_id: uuid.UUID
     status: str

@@ -92,23 +92,24 @@ class Judge0Client:
                     break
                 if time.monotonic() > deadline:
                     raise _PollTimeout(f"Judge0 did not finish submission {token} in {settings.JUDGE0_POLL_TIMEOUT_SECONDS}s")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
         for field in ("stdout", "stderr", "compile_output", "message"):
             if result.get(field):
                 result[field] = base64.b64decode(result[field]).decode("utf-8", errors="replace")
         return result
 
     async def run_many(self, source_code: str, language: str, test_cases: list[dict]) -> list[dict]:
-        results = []
-        for tc in test_cases:
-            result = await self.run(
-                source_code,
-                language,
-                stdin=str(tc.get("input", "")),
-                expected_output=str(tc.get("expected_output", "")) if tc.get("expected_output") is not None else None,
-            )
-            results.append(result)
-        return results
+        """Order-preserving; submissions overlap (bounded) so polling latency does not stack per test."""
+        sem = asyncio.Semaphore(4)
+
+        async def one(tc: dict) -> dict:
+            async with sem:
+                return await self.run(
+                    source_code, language, stdin=str(tc.get("input", "")),
+                    expected_output=str(tc.get("expected_output", "")) if tc.get("expected_output") is not None else None,
+                )
+
+        return list(await asyncio.gather(*(one(tc) for tc in test_cases)))
 
 
 async def _run_local_python_fallback(source_code: str, stdin: str, expected_output: str | None, why: str) -> dict:

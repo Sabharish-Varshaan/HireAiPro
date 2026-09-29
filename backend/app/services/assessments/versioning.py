@@ -157,8 +157,14 @@ def student_question(attempt: AssessmentAttempt, q: FrozenQ) -> dict:
     perm = (attempt.option_orders or {}).get(str(q.aq_id))
     options = [q.options[i] for i in perm] if (perm and q.options) else q.options
     starter = None if q.source_type == QuestionSourceType.AI_GENERATED.value else q.starter_code
-    return {"id": q.id, "question_text": q.question_text, "question_type": q.question_type, "skill_id": q.skill_id,
-            "difficulty": q.difficulty, "options": options, "starter_code": starter, "allowed_languages": q.allowed_languages}
+    out = {"id": q.id, "question_text": q.question_text, "question_type": q.question_type, "skill_id": q.skill_id,
+           "difficulty": q.difficulty, "options": options, "starter_code": starter, "allowed_languages": q.allowed_languages}
+    if q.question_type == "CODING" and q.test_cases:
+        from app.services.coding import test_model as tm
+
+        out["sample_tests"] = tm.sample_view(q.test_cases)  # visible samples only; hidden inputs/outputs never leave the server
+        out["hidden_test_count"] = tm.hidden_count(q.test_cases)
+    return out
 
 
 def expired(attempt: AssessmentAttempt, grace: bool = False) -> bool:

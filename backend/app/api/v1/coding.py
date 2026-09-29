@@ -1,5 +1,7 @@
 import uuid
 
+import time
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +13,7 @@ from app.models.coding import CodingSubmission, CodingTestResult
 from app.models.enums import AssessmentAttemptStatus, EvidenceSourceType, QuestionType, UserRole
 from app.models.questions import Question
 from app.models.users import User
-from app.schemas.coding import CodingSubmitRequest
+from app.schemas.coding import CodingRunRequest, CodingSubmitRequest
 from app.schemas.student_views import StudentCodingResult, coding_status
 from app.services.assessments import versioning as ver
 from app.services.coding.judge0_client import ExecutionUnavailable, get_judge0_client
@@ -106,3 +108,56 @@ async def coding_languages(user: User = Depends(require_roles(UserRole.STUDENT, 
     return [{"id": k, "display_name": v["display_name"], "monaco": v["monaco"],
              "judge0_language_id": live.get(k, {}).get("judge0_language_id"), "judge0_name": live.get(k, {}).get("judge0_name"),
              "available": k in live} for k, v in SUPPORTED_LANGUAGES.items()]
+
+
+_last_run: dict[uuid.UUID, float] = {}
+RUN_SPACING_SECONDS = 2.0  # Judge0 has one worker: keep Run from starving other candidates' submissions
+MAX_CUSTOM_INPUT = 10_000
+_clip = lambda v, n=800: (v or "")[:n] or None  # noqa: E731
+
+
+@router.post("/run")
+async def run_code(payload: CodingRunRequest, user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
+    """Debug run: the visible sample tests (and optional custom input). Nothing is scored, stored as a submission, or
+    turned into evidence; hidden tests are never touched."""
+    from app.services.coding import test_model as tm
+
+    if payload.language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(422, f"Unsupported language; choose one of {sorted(SUPPORTED_LANGUAGES)}")
+    if payload.custom_input is not None and len(payload.custom_input) > MAX_CUSTOM_INPUT:
+        raise HTTPException(422, "Custom input is too large")
+    me = await get_student_profile(db, user)
+    answer = await db.get(AssessmentAnswer, payload.assessment_answer_id)
+    attempt = await db.get(AssessmentAttempt, answer.attempt_id) if answer else None
+    if answer is None or attempt is None or me is None or attempt.student_id != me.id:
+        raise HTTPException(404, "Answer not found in one of your attempts")
+    if attempt.status != AssessmentAttemptStatus.IN_PROGRESS:
+        raise HTTPException(409, "Attempt already submitted")
+    if ver.expired(attempt, grace=True):
+        raise HTTPException(409, {"code": "ATTEMPT_EXPIRED", "message": "Time is up."})
+    question = (await ver.load_frozen(db, attempt)).by_aq[answer.assessment_question_id]
+    if question.id != payload.question_id or QuestionType(question.question_type) != QuestionType.CODING or not question.test_cases:
+        raise HTTPException(422, "Not a coding question with test cases")
+    if payload.language not in allowed_for_question(question):
+        raise HTTPException(422, f"This question accepts {allowed_for_question(question)}")
+    now = time.monotonic()
+    if now - _last_run.get(attempt.id, 0.0) < RUN_SPACING_SECONDS:
+        raise HTTPException(429, "Please wait a moment between runs")
+    _last_run[attempt.id] = now
+    samples = [question.test_cases[i] for i in tm.visible_indexes(question.test_cases)]
+    client = get_judge0_client()
+    try:
+        results = await client.run_many(payload.source_code, payload.language, samples)
+        custom = await client.run(payload.source_code, payload.language, stdin=payload.custom_input) if payload.custom_input else None
+    except ExecutionUnavailable:
+        raise HTTPException(503, {"code": "EXECUTION_SERVICE_UNAVAILABLE",
+                                  "message": "The code runner is unavailable right now. Your code is saved; please retry."})
+    def _out(r: dict) -> dict:
+        return {"status": (r.get("status") or {}).get("description"), "stdout": _clip(r.get("stdout")),
+                "stderr": _clip(r.get("stderr") or r.get("compile_output"))}
+    return {
+        "samples": [{"index": i, "input": str(t.get("input", "")), "expected_output": str(t.get("expected_output", "")),
+                     "passed": (r.get("status") or {}).get("id") == 3, **_out(r)} for i, (t, r) in enumerate(zip(samples, results))],
+        "custom": _out(custom) if custom else None,
+        "hidden_test_count": tm.hidden_count(question.test_cases),
+    }

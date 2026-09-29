@@ -210,3 +210,50 @@ async def test_rejecting_a_question_retires_its_evidence(client):
     async with AsyncSessionLocal() as db:
         ev = await db.scalar(select(SkillEvidence).where(SkillEvidence.source_id == s.id))
     assert ev.is_deleted
+
+
+@pytest.mark.asyncio
+async def test_run_uses_only_visible_samples_and_creates_no_submission(client, monkeypatch):
+    from app.api.v1 import coding as coding_api
+
+    seen = {"tests": None, "custom": None}
+
+    async def run_many(self, src, lang, tests):
+        seen["tests"] = [t["input"] for t in tests]
+        return [{"status": {"id": 3, "description": "Accepted"}, "stdout": t["expected_output"]} for t in tests]
+
+    async def run(self, src, lang, stdin="", expected_output=None):
+        seen["custom"] = stdin
+        return {"status": {"id": 3, "description": "Accepted"}, "stdout": "echo:" + stdin}
+    monkeypatch.setattr(jc.Judge0Client, "run_many", run_many)
+    monkeypatch.setattr(jc.Judge0Client, "run", run)
+    monkeypatch.setattr(coding_api, "RUN_SPACING_SECONDS", 0.0)
+    st, hs, answer_id, q, detail = await _setup(client)
+    code = [x["question"] for s in detail["sections"] for x in s["questions"] if x["question"]["question_type"] == "CODING"][0]
+    assert [s["input"] for s in code["sample_tests"]] == ["[1, 2, 3]", "[10, -4]"] and code["hidden_test_count"] == 1
+    assert "[0]" not in str(code)  # the hidden test never reaches the browser
+    body = {"assessment_answer_id": answer_id, "question_id": str(q.id), "language": "python", "source_code": "print(6)", "custom_input": "[7]"}
+    r = await client.post("/coding/run", headers=hs, json=body)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert seen["tests"] == ["[1, 2, 3]", "[10, -4]"] and seen["custom"] == "[7]"  # samples only; hidden test not executed
+    assert [s["passed"] for s in out["samples"]] == [True, True] and out["custom"]["stdout"] == "echo:[7]"
+    assert "[0]" not in r.text
+    async with AsyncSessionLocal() as db:  # a Run is not a submission and produces no evidence
+        assert await db.scalar(select(func.count(CodingSubmission.id)).where(CodingSubmission.question_id == q.id)) == 0
+        assert await db.scalar(select(func.count(SkillEvidence.id)).where(SkillEvidence.student_id == st.id)) == 0
+    bad = await client.post("/coding/run", headers=hs, json={**body, "language": "ruby"})
+    assert bad.status_code == 422
+    big = await client.post("/coding/run", headers=hs, json={**body, "custom_input": "x" * 20000})
+    assert big.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_run_is_rate_limited_per_attempt(client, monkeypatch):
+    async def run_many(self, src, lang, tests):
+        return [{"status": {"id": 3, "description": "Accepted"}, "stdout": ""} for _ in tests]
+    monkeypatch.setattr(jc.Judge0Client, "run_many", run_many)
+    _, hs, answer_id, q, _ = await _setup(client)
+    body = {"assessment_answer_id": answer_id, "question_id": str(q.id), "language": "python", "source_code": "print(6)"}
+    assert (await client.post("/coding/run", headers=hs, json=body)).status_code in (200, 429)
+    assert (await client.post("/coding/run", headers=hs, json=body)).status_code == 429

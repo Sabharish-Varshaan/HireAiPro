@@ -77,8 +77,9 @@ async def test_order_is_persisted_options_map_back_and_keys_never_leave(client, 
     assert ids(s1) == ids(s2) and opts(s1) == opts(s2)  # refresh never reshuffles
     assert sorted(ids(s1)) == sorted(str(x.id) for x in ctx["aqs"])
     blob = str(s1)
-    for forbidden in ("correct_option_index", "test_cases", "rubric", "expected_concepts", "expected_output"):
+    for forbidden in ("correct_option_index", "test_cases", "rubric", "expected_concepts"):
         assert forbidden not in blob
+    assert "[0]" not in blob  # the hidden coding test; only the visible samples are sent
     mcq_item = next(q for sec in s1["sections"] for q in sec["questions"] if q["question"]["question_type"] == "MCQ")
     shown = mcq_item["question"]["options"]
     assert sorted(shown) == ["emit", "return", "yield"]

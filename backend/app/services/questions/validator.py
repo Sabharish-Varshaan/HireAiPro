@@ -54,6 +54,7 @@ def validate_structure(
     options: list | None,
     correct_option_index: int | None,
     test_cases: list | None,
+    strict_tests: bool = False,
 ) -> ValidationResult:
     r = ValidationResult(ok=True)
 
@@ -82,7 +83,8 @@ def validate_structure(
         check("rubric", bool(rubric) and bool(rubric.get("criteria")), "technical question needs a rubric")
     elif question_type == QuestionType.CODING:
         tcs = test_cases or []
-        check("test_cases", len(tcs) >= 2, "coding question needs >=2 test cases")
+        check("test_cases", len(tcs) >= (8 if strict_tests else 2),
+              "generated coding question needs >=8 test cases" if strict_tests else "coding question needs >=2 test cases")
         check(
             "test_case_shape",
             all(isinstance(t, dict) and "input" in t and "expected_output" in t for t in tcs),

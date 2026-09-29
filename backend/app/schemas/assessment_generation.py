@@ -24,7 +24,7 @@ class GeneratedCodingQuestion(BaseModel):
     used_context: list[int] = Field(default_factory=list)
     question_text: str
     starter_code: str | None = None  # ignored: generated starters are never shipped
-    test_cases: list[dict] = Field(min_length=2)
+    test_cases: list[dict] = Field(min_length=8, max_length=18)
 
 
 class AssessmentSectionPlan(BaseModel):

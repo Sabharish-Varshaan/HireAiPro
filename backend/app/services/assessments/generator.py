@@ -90,7 +90,12 @@ async def search_company_questions(
 
 
 def _tests_verified(q: Question) -> bool:
-    return bool(((q.validation_report or {}).get("checks") or {}).get("tests_verified_by_execution"))
+    """An AI-generated coding question is reusable only if its tests were execution-verified AND are deep enough.
+    (Earlier generations shipped only 2-3 tests.)"""
+    from app.services.coding.test_model import MIN_TOTAL
+
+    ok = bool(((q.validation_report or {}).get("checks") or {}).get("tests_verified_by_execution"))
+    return ok and len(q.test_cases or []) >= MIN_TOTAL
 
 
 async def _reverify_coding(q: Question, job_id: uuid.UUID) -> None:
@@ -192,8 +197,12 @@ async def generate_missing_question(
         g = await gateway.generate_structured(
             f"{context}Write one {difficulty} language-neutral coding problem testing '{skill_name}' that can be solved in "
             "Python, JavaScript or C++. The program reads ONE line of stdin containing a JSON value (e.g. [1,2,3]) "
-            "and prints the answer. Do NOT include starter code or any part of a solution. Give 3 test_cases as "
-            '{"input": "<exact stdin text>", "expected_output": "<exact stdout text>"}.',
+            "and prints the answer. Do NOT include starter code or any part of a solution. Give 11 to 14 test_cases as "
+            '{"input": "<exact stdin text>", "expected_output": "<exact stdout text>", "visible": <true|false>, "category": "<category>"}. '
+            "Exactly 2 or 3 have visible=true: simple, illustrative samples. The rest are hidden. Every test must be a DIFFERENT case; "
+            "use categories such as normal, boundary_minimum, empty, single_element, maximum_size, duplicates, ordering, "
+            "negative_values, all_equal, special_case, performance (only where the problem makes them meaningful). "
+            "Include at least 4 distinct categories. Compute every expected_output exactly; inputs stay under 1500 characters.",
             GeneratedCodingQuestion, **common,
         )
         # LLM-written starter code is never shipped: in QA it contained the complete
@@ -207,7 +216,7 @@ async def generate_missing_question(
     else:
         result = validate_structure(
             qtype, g.question_text, difficulty, fields.get("expected_concepts"), fields.get("rubric"),
-            fields.get("options"), fields.get("correct_option_index"), fields.get("test_cases"),
+            fields.get("options"), fields.get("correct_option_index"), fields.get("test_cases"), strict_tests=True,
         )
     if result.ok:
         result = validate_semantics(
@@ -217,7 +226,11 @@ async def generate_missing_question(
     if result.ok and qtype == QuestionType.CODING:
         from app.services.questions.coding_verification import verify_test_cases
 
-        verified, why = await verify_test_cases(g.question_text, fields["test_cases"], related_entity_id=job_id)
+        from app.services.questions.coding_verification import verify_and_prune
+
+        verified, why, kept = await verify_and_prune(g.question_text, fields["test_cases"], related_entity_id=job_id)
+        if kept:
+            fields["test_cases"] = kept  # only tests confirmed by two independent sources are stored
         result.checks["tests_verified_by_execution"] = verified
         if not verified:
             result.reasons.append(why)
