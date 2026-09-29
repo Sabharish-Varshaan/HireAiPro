@@ -8,7 +8,7 @@ import { useAuthStore } from "../../stores/authStore";
 const ROLES = [
   { value: "STUDENT", label: "Student" },
   { value: "RECRUITER", label: "Recruiter / Company" },
-  { value: "INSTITUTION_ADMIN", label: "Institution Admin" },
+  { value: "PLACEMENT_OFFICER", label: "Placement Officer (institution)" },
 ];
 
 export default function SignupPage() {
@@ -16,6 +16,7 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("STUDENT");
+  const [orgName, setOrgName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const setAuth = useAuthStore((s) => s.setAuth);
@@ -27,13 +28,15 @@ export default function SignupPage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await api.post("/auth/signup", { email, password, full_name: fullName, role });
+      const res = await api.post("/auth/signup", {
+        email, password, full_name: fullName, role,
+        company_name: role === "RECRUITER" ? orgName : undefined, institution_name: role === "PLACEMENT_OFFICER" ? orgName : undefined });
       const { access_token, user_id, role: r, full_name: fn } = res.data;
       qc.clear();
       setAuth(access_token, user_id, r, fn);
       if (r === "STUDENT") navigate("/student");
       else if (r === "PLATFORM_ADMIN") navigate("/admin");
-      else if (r === "INSTITUTION_ADMIN") navigate("/institution");
+      else if (r === "PLACEMENT_OFFICER") navigate("/institution");
       else navigate("/company");
     } catch (err: any) {
       setError(err.response ? apiError(err) : "Signup failed");
@@ -54,6 +57,11 @@ export default function SignupPage() {
             <option key={r.value} value={r.value}>{r.label}</option>
           ))}
         </select>
+        {role !== "STUDENT" && (
+          <input className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm" data-testid="org-name"
+            placeholder={role === "RECRUITER" ? "Company name" : "Institution name"} value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+        )}
+        {role === "STUDENT" && <p className="text-xs text-gray-500">Invited by your institution? Use the link in your invitation email instead.</p>}
         {error && <p className="text-sm text-red-600">{error}</p>}
         <button disabled={loading} className="w-full bg-gray-900 text-white rounded-md py-2 text-sm font-medium disabled:opacity-50">
           {loading ? "Creating..." : "Create account"}

@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.users import User
 from app.models.enums import UserRole
+from app.models.organizations import Organization, OrganizationMember
 from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse
 
 
@@ -11,14 +12,19 @@ class AuthError(Exception):
     pass
 
 
-SELF_SIGNUP_ROLES = {UserRole.STUDENT, UserRole.RECRUITER, UserRole.COMPANY_ADMIN, UserRole.HIRING_MANAGER,
-                     UserRole.INSTITUTION_ADMIN}
+# Active product scope: Student, Recruiter (creates a company), Placement Officer (creates an institution).
+# Institution Admin / Faculty / Department Head are deferred and not offered; Platform Admin is CLI-only.
+SELF_SIGNUP_ROLES = {UserRole.STUDENT, UserRole.RECRUITER, UserRole.PLACEMENT_OFFICER}
 
 
 async def signup(db: AsyncSession, payload: SignupRequest) -> TokenResponse:
     if payload.role not in SELF_SIGNUP_ROLES:
         # Platform admins (and invited institution staff) are never self-registered.
         raise AuthError("This role cannot be self-registered")
+    if payload.role == UserRole.RECRUITER and not (payload.company_name or "").strip():
+        raise AuthError("Company name is required")
+    if payload.role == UserRole.PLACEMENT_OFFICER and not (payload.institution_name or "").strip():
+        raise AuthError("Institution name is required")
     if len(payload.password) < 8:
         raise AuthError("Password must be at least 8 characters")
     existing = await db.scalar(select(User).where(User.email == payload.email))
@@ -31,6 +37,16 @@ async def signup(db: AsyncSession, payload: SignupRequest) -> TokenResponse:
         role=payload.role,
     )
     db.add(user)
+    await db.flush()
+    if payload.role == UserRole.RECRUITER:
+        org = Organization(name=payload.company_name.strip(), created_by_user_id=user.id)
+        db.add(org)
+        await db.flush()
+        db.add(OrganizationMember(organization_id=org.id, user_id=user.id, role=UserRole.COMPANY_ADMIN))
+    elif payload.role == UserRole.PLACEMENT_OFFICER:
+        from app.services.accounts.service import provision_placement_officer
+
+        await provision_placement_officer(db, user, payload.institution_name)
     await db.commit()
     await db.refresh(user)
     token = create_access_token(user.id, user.role)

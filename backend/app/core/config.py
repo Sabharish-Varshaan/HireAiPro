@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     ALLOW_UNSANDBOXED_CODE_EXECUTION: bool = False  # per test case; past it the run fails closed (never re-run unsandboxed)
 
+    # Account lifecycle (docs/ACCOUNTS.md). Invitation/reset tokens are random, single use, and stored hashed.
+    INVITE_TTL_HOURS: int = 72
+    RESET_TTL_MINUTES: int = 60
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    # No mail provider is integrated: emails are written to email_outbox, readable at /api/v1/dev/email-outbox
+    # ONLY when APP_ENV is development or demo. In production the outbox is neither written nor served.
+    EMAIL_OUTBOX_ENVS: str = "development,demo"
+
     SCORING_VERSION: str = "skill_scoring_v1"
     MATCHING_VERSION: str = "matching_v1"
 

@@ -7,6 +7,13 @@ database, which was deleted afterwards.
 
 **Evidence labels:** `CODE` (read in source), `DB` (queried dev DB), `PROBE` (executed against the API in the test DB), `NOT MEASURED`.
 
+## 0. Current Hackathon Scope (decided after the audit)
+**Active roles:** Placement Officer (represents an institution), Company (recruiter), Student.
+**Deferred (code remains, no new work, not offered in signup or UI):** Institution Admin, Faculty, Department Head.
+**Platform Admin:** internal governance only (skills, questions, knowledge, AI/cost, audit, user disable).
+Findings below that concern deferred roles (section 3 rows for Institution Admin/Faculty/Head, permission scoping
+gap P0-6) are **deferred, not fixed**. Placement Officer takes over the institution-owner responsibilities.
+
 ## 1. Actual architecture (short)
 FastAPI (`backend/app/api/v1/*`) → services → SQLAlchemy models; Celery for documents/assessment
 generation/matching; Judge0 for code; AI gateway with Groq/OpenAI/Ollama; React SPA with four portals

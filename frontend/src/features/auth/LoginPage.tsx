@@ -57,7 +57,7 @@ export default function LoginPage() {
           {loading ? "Signing in..." : "Sign in"}
         </button>
         <p className="text-xs text-gray-500 text-center">
-          No account? <a className="underline" href="/signup">Sign up</a>
+          <a className="underline" href="/forgot-password">Forgot password?</a> · No account? <a className="underline" href="/signup">Sign up</a>
         </p>
       </form>
     </div>

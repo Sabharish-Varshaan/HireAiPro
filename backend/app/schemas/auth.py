@@ -10,6 +10,23 @@ class SignupRequest(BaseModel):
     password: str
     full_name: str
     role: UserRole
+    company_name: str | None = None      # required for RECRUITER
+    institution_name: str | None = None  # required for PLACEMENT_OFFICER
+
+
+class AcceptInvitation(BaseModel):
+    token: str
+    password: str
+    full_name: str | None = None
+
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+
+class ResetPassword(BaseModel):
+    token: str
+    password: str
 
 
 class LoginRequest(BaseModel):

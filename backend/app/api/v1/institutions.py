@@ -45,7 +45,7 @@ async def _member(db, user: User, institution_id: uuid.UUID) -> None:
 
 
 @router.post("")
-async def create_institution(payload: NameIn, user: User = Depends(require_roles(UserRole.INSTITUTION_ADMIN)),
+async def create_institution(payload: NameIn, user: User = Depends(require_roles(UserRole.PLACEMENT_OFFICER, UserRole.INSTITUTION_ADMIN)),
                              db: AsyncSession = Depends(get_db)):
     inst = Institution(name=payload.name, created_by_user_id=user.id)
     db.add(inst)

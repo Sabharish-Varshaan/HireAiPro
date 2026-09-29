@@ -3,6 +3,7 @@ import { AppShell } from "./components/AppShell";
 import AdminDashboard from "./features/admin/AdminDashboard";
 import { AdminAudit, AdminJobs, AdminKnowledge, AdminRuns, AdminSkills, AdminUsers } from "./features/admin/AdminPages";
 import LoginPage from "./features/auth/LoginPage";
+import { ClaimAccountPage, DevOutboxPage, ForgotPasswordPage, ResetPasswordPage } from "./features/auth/AccountPages";
 import SignupPage from "./features/auth/SignupPage";
 import CareerPage from "./features/career/CareerPage";
 import CandidatePage from "./features/company/CandidatePage";
@@ -39,6 +40,10 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
+      <Route path="/claim" element={<ClaimAccountPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/dev/outbox" element={<DevOutboxPage />} />
 
       <Route path="/student" element={<RequireRole roles={["STUDENT"]}><AppShell nav={[
         { to: "/student", label: "Dashboard" }, { to: "/student/jobs", label: "Jobs" },

@@ -1,3 +1,4 @@
+from app.models.accounts import EmailOutbox, InstitutionStudent, Invitation, PasswordReset
 from app.models.applications import Application, ApplicationStatusHistory
 from app.models.assessments import (
     Assessment,
