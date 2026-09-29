@@ -33,6 +33,7 @@ class Job(Base, UUIDPk, TimestampMixin):
     institution_approval: Mapped[str] = mapped_column(String, default="NOT_REQUIRED", server_default="NOT_REQUIRED")  # NOT_REQUIRED|PENDING|APPROVED|REJECTED
     approval_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assessment_target_questions: Mapped[int | None] = mapped_column(nullable=True)  # recruiter's requested assessment size
     eligibility: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # {department_ids, cohort_ids, graduation_years}; empty/absent = all
 
 

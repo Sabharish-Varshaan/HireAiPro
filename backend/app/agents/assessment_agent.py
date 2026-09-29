@@ -115,7 +115,7 @@ async def build_assessment_blueprint(ctx: RunContext[AssessmentDeps]) -> list[di
     d = ctx.deps
     if not d.competencies:
         d.competencies = await gen.get_confirmed_job_skills(d.db, d.job.id)
-    d.blueprint = gen.blueprint_for(d.competencies)
+    d.blueprint = gen.blueprint_for(d.competencies, d.job.assessment_target_questions)
     d.work = [
         SkillWork(
             alloc=a,
@@ -332,7 +332,7 @@ async def run_assessment_agent(
 
     async def fallback() -> AssessmentPlan:
         deps.competencies = await gen.get_confirmed_job_skills(db, job.id)
-        deps.blueprint = gen.blueprint_for(deps.competencies)
+        deps.blueprint = gen.blueprint_for(deps.competencies, deps.job.assessment_target_questions)
         if not deps.work:
             deps.work = [
                 SkillWork(alloc=a, need={QuestionType.MCQ: a.mcq_count, QuestionType.TECHNICAL: a.technical_count, QuestionType.CODING: a.coding_count})

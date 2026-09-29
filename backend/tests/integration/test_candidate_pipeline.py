@@ -73,15 +73,19 @@ async def test_full_candidate_pipeline(client, monkeypatch):
     r = await client.post("/applications", headers=hs, json={"job_id": str(job.id)})
     assert r.status_code == 200 and r.json()["status"] == "APPLIED" and r.json()["job_title"] == "Backend Developer"
     app_id = r.json()["id"]
-    # the student view never includes answer keys or hidden tests
+    # before starting, a candidate learns the size and time limit but sees no questions
     detail = (await client.get(f"/assessments/{a.id}", headers=hs)).json()
-    flat = [q["question"] for s in detail["sections"] for q in s["questions"]]
-    assert all("correct_option_index" not in q and "test_cases" not in q for q in flat)
+    assert detail["sections"] == []
+    assert (await client.get(f"/assessments/{a.id}/overview", headers=hs)).json()["question_count"] == 3
 
     attempt = (await client.post(f"/assessments/{a.id}/attempts", headers=hs, json={"application_id": app_id})).json()
+    sess = (await client.get(f"/assessments/attempts/{attempt['id']}", headers=hs)).json()
+    flat = [q["question"] for s in sess["sections"] for q in s["questions"]]
+    assert len(flat) == 3 and all("correct_option_index" not in q and "test_cases" not in q and "rubric" not in q for q in flat)
     mcq, tech, code = aqs
-    await client.put(f"/assessments/attempts/{attempt['id']}/answers", headers=hs,
-                     json={"assessment_question_id": str(mcq.id), "selected_option_index": 1})
+    shown = next(q for s in sess["sections"] for q in s["questions"] if q["id"] == str(mcq.id))["question"]["options"]
+    await client.put(f"/assessments/attempts/{attempt['id']}/answers", headers=hs,  # options are shuffled per attempt: pick by text
+                     json={"assessment_question_id": str(mcq.id), "selected_option_index": shown.index("yield")})
     await client.put(f"/assessments/attempts/{attempt['id']}/answers", headers=hs,
                      json={"assessment_question_id": str(tech.id), "answer_text": "When the predicate is selective..."})
     saved = (await client.put(f"/assessments/attempts/{attempt['id']}/answers", headers=hs,

@@ -101,6 +101,31 @@ function RequirementsEditor({ job }: { job: any }) {
   );
 }
 
+function DeliveryOptions({ assessment, estimated }: { assessment: any; estimated?: number }) {
+  const qc = useQueryClient();
+  const cfg = assessment.config ?? {};
+  const [minutes, setMinutes] = useState<string>(String(cfg.duration_minutes ?? estimated ?? assessment.total_duration_minutes ?? 60));
+  const [rq, setRq] = useState<boolean>(cfg.randomize_questions ?? true);
+  const [ro, setRo] = useState<boolean>(cfg.randomize_options ?? true);
+  const save = useMutation({
+    mutationFn: () => api.put(`/assessments/${assessment.id}/config`, { duration_minutes: Number(minutes), randomize_questions: rq, randomize_options: ro }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["assessment-by-job"] }),
+  });
+  return (
+    <div className="border border-gray-200 rounded-md p-2 text-sm space-y-2" data-testid="delivery-options">
+      <p className="text-xs font-medium">Delivery options (frozen when you publish)</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="text-xs">Time limit (minutes) <input className={`${inputCls} w-20 inline-block`} value={minutes} onChange={(e) => setMinutes(e.target.value)} /></label>
+        <label className="text-xs"><input type="checkbox" checked={rq} onChange={(e) => setRq(e.target.checked)} /> Shuffle question order per candidate</label>
+        <label className="text-xs"><input type="checkbox" checked={ro} onChange={(e) => setRo(e.target.checked)} /> Shuffle answer options per candidate</label>
+        <Button variant="secondary" onClick={() => save.mutate()} disabled={save.isPending}>Save options</Button>
+        {save.isSuccess && <span className="text-xs text-green-700">Saved</span>}
+      </div>
+      <ErrorBox error={save.error} />
+    </div>
+  );
+}
+
 function AssessmentPanel({ job, processing }: { job: any; processing: any }) {
   const qc = useQueryClient();
   const { data: assessment } = useQuery({
@@ -113,8 +138,9 @@ function AssessmentPanel({ job, processing }: { job: any; processing: any }) {
     enabled: !!assessment?.id,
   });
   const gen = processing?.assessment;
+  const [target, setTarget] = useState("12");
   const generate = useMutation({
-    mutationFn: () => api.post(`/assessments/jobs/${job.id}/generate`, { title: `${job.title} Assessment` }),
+    mutationFn: () => api.post(`/assessments/jobs/${job.id}/generate`, { title: `${job.title} Assessment`, total_questions: Number(target) || null }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["processing", job.id] }),
   });
   const publish = useMutation({
@@ -136,6 +162,9 @@ function AssessmentPanel({ job, processing }: { job: any; processing: any }) {
         <p className="text-sm text-amber-700">Generating (Assessment Agent)… this can take a few minutes. Status: {gen.status}</p>
       )}
       {gen?.status === "FAILED" && <ErrorBox error={{ message: `Generation failed: ${gen.error}` }} onRetry={() => generate.mutate()} />}
+      {canGenerate && (
+        <label className="text-xs text-gray-600">Target number of questions <input className={`${inputCls} w-16 inline-block`} value={target} onChange={(e) => setTarget(e.target.value)} data-testid="target-questions" /> (6–30)</label>)}
+      {assessment && assessment.status !== "PUBLISHED" && <DeliveryOptions assessment={assessment} estimated={detail?.plan?.estimated_duration_minutes} />}
       <div className="flex gap-2">
         {canGenerate && (
           <Button onClick={() => generate.mutate()} disabled={generate.isPending || gen?.status === "RUNNING" || gen?.status === "PENDING"}>

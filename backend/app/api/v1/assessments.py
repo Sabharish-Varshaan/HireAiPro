@@ -1,4 +1,6 @@
+import datetime as dt
 import uuid
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -22,6 +24,7 @@ from app.schemas.assessments import (
     AssessmentSectionOut,
     AttemptOut,
     GenerateAssessmentRequest,
+    AssessmentConfigIn,
     StartAttemptRequest,
     SubmitAnswerRequest,
 )
@@ -30,6 +33,7 @@ from app.schemas.questions import QuestionOut, QuestionStudentOut
 from app.schemas.rubric import RubricEvaluation
 from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
 from app.services.applications.service import transition_application
+from app.services.assessments import versioning as ver
 from app.services.audit import audit
 from app.services.evidence.estimator import recalculate_all_skills_for_student
 from app.services.evidence.service import record_evidence
@@ -70,9 +74,28 @@ async def generate_assessment(
         raise HTTPException(409, "Confirm the job requirements before generating an assessment")
     from app.workers.tasks_questions import generate_assessment_task
 
+    job.assessment_target_questions = payload.total_questions
+    await db.commit()
+
     await upsert_job(f"assessment:{job.id}", "assessment_generation", {"job_id": str(job.id), "title": payload.title})
     generate_assessment_task.delay(str(job.id), payload.title, str(user.id))
     return {"status": "PROCESSING", "job_key": f"assessment:{job.id}"}
+
+
+@router.put("/{assessment_id}/config", response_model=AssessmentOut)
+async def set_config(assessment_id: uuid.UUID, payload: AssessmentConfigIn, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                     db: AsyncSession = Depends(get_db)):
+    """Delivery options. Locked once published: the published version is immutable."""
+    assessment = await db.get(Assessment, assessment_id)
+    if assessment is None:
+        raise HTTPException(404, "Assessment not found")
+    await get_job_for_member(db, user, assessment.job_id)
+    if assessment.status == "PUBLISHED":
+        raise HTTPException(409, "A published assessment is frozen and its options can no longer change")
+    assessment.config = {**(assessment.config or {}), **payload.model_dump(exclude_none=True)}
+    await db.commit()
+    await db.refresh(assessment)
+    return assessment
 
 
 @router.post("/{assessment_id}/publish", response_model=AssessmentOut)
@@ -85,6 +108,7 @@ async def publish_assessment(assessment_id: uuid.UUID, user: User = Depends(requ
     n = len((await db.scalars(select(AssessmentQuestion.id).where(AssessmentQuestion.assessment_id == assessment.id))).all())
     if n == 0:
         raise HTTPException(409, "Assessment has no questions")
+    await ver.ensure_version(db, assessment, user.id)  # freeze content, answer keys and hidden tests
     assessment.status = "PUBLISHED"
     job.status = JobStatus.PUBLISHED
     if job.distribution_type == "INSTITUTION" and job.institution_approval in ("NOT_REQUIRED", "REJECTED"):
@@ -114,7 +138,7 @@ async def get_assessment(assessment_id: uuid.UUID, user: User = Depends(get_curr
     sections = (await db.scalars(select(AssessmentSection).where(AssessmentSection.assessment_id == assessment.id)
                                  .order_by(AssessmentSection.order_index))).all()
     section_outs = []
-    for s in sections:
+    for s in sections if recruiter_view else []:  # candidates receive questions only through their attempt session
         aqs = (await db.scalars(select(AssessmentQuestion).where(AssessmentQuestion.section_id == s.id)
                                 .order_by(AssessmentQuestion.order_index))).all()
         items = []
@@ -141,7 +165,8 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
                         user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
     assessment, _ = await _assessment_access(db, user, await db.get(Assessment, assessment_id))
     profile = await get_student_profile(db, user)
-    application = await db.get(Application, payload.application_id)
+    # row lock: two tabs starting at once must not create two attempts (and two clocks)
+    application = await db.scalar(select(Application).where(Application.id == payload.application_id).with_for_update())
     if profile is None or application is None or application.student_id != profile.id or application.job_id != assessment.job_id:
         raise HTTPException(403, "Not your application for this assessment")
     from app.api.v1.proctoring import require_ready_session
@@ -154,8 +179,14 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
             session.assessment_attempt_id = existing.id
             await db.commit()
         return _student_attempt(existing)
+    version = await ver.ensure_version(db, assessment)
+    cfg = version.config
+    qorder, oorder = ver.new_layout(ver._from_content(version.content), cfg)
+    started = ver.now()
     attempt = AssessmentAttempt(assessment_id=assessment_id, application_id=application.id, student_id=profile.id,
-                                status=AssessmentAttemptStatus.IN_PROGRESS)
+                                status=AssessmentAttemptStatus.IN_PROGRESS, version_id=version.id, started_at=started,
+                                expires_at=started + dt.timedelta(minutes=version.duration_minutes),
+                                question_order=qorder, option_orders=oorder)
     db.add(attempt)
     if ApplicationStatus(application.status) == ApplicationStatus.APPLIED:
         await transition_application(db, application, ApplicationStatus.ASSESSMENT_PENDING, user.id, "assessment started")
@@ -175,16 +206,44 @@ async def _own_attempt(db, user, attempt_id) -> AssessmentAttempt:
     return attempt
 
 
+@router.get("/{assessment_id}/overview")
+async def overview(assessment_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """What a candidate may know before starting: size and time limit, never the questions."""
+    assessment, _ = await _assessment_access(db, user, await db.get(Assessment, assessment_id))
+    version = await ver.ensure_version(db, assessment)
+    fz = ver._from_content(version.content)
+    await db.commit()
+    return {"id": assessment.id, "title": assessment.title, "question_count": len(fz.by_aq),
+            "duration_minutes": version.duration_minutes, "sections": [{"title": x["title"], "count": len(x["aq_ids"])} for x in fz.sections],
+            "types": {t: sum(1 for q in fz.by_aq.values() if q.question_type == t) for t in ("MCQ", "TECHNICAL", "CODING")}}
+
+
 @router.get("/attempts/{attempt_id}")
 async def get_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)),
                       db: AsyncSession = Depends(get_db)):
+    """The candidate's session: frozen questions in this attempt's persisted order, saved answers, and the server clock.
+    An attempt found past its deadline is finalized here, so abandoning the tab cannot extend the time."""
     attempt = await _own_attempt(db, user, attempt_id)
-    answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()
-    return {
-        "attempt": _student_attempt(attempt),
-        "answers": [{"id": a.id, "assessment_question_id": a.assessment_question_id, "answer_text": a.answer_text,
-                     "selected_option_index": a.selected_option_index} for a in answers],
-    }
+    if attempt.status == AssessmentAttemptStatus.IN_PROGRESS and ver.expired(attempt):
+        await _finalize(db, attempt, user)
+        await db.refresh(attempt)
+    fz = await ver.load_frozen(db, attempt)
+    answers = {a.assessment_question_id: a for a in (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()}
+    sections, n = [], 0
+    for sec in fz.sections:
+        order = (attempt.question_order or {}).get(str(sec["id"])) or [str(i) for i in sec["aq_ids"]]
+        items = []
+        for aq_id in order:
+            q = fz.by_aq[uuid.UUID(str(aq_id))]
+            n += 1
+            a = answers.get(q.aq_id)
+            items.append({"id": q.aq_id, "number": n, "question": ver.student_question(attempt, q),
+                          "answer": {"answer_id": a.id if a else None, "answer_text": a.answer_text if a else None,
+                                     "selected_option_index": ver.to_displayed(attempt, q.aq_id, a.selected_option_index) if a else None,
+                                     "marked_for_review": bool(a.marked_for_review) if a else False}})
+        sections.append({"id": sec["id"], "title": sec["title"], "questions": items})
+    return {"attempt": _student_attempt(attempt), "started_at": attempt.started_at, "expires_at": attempt.expires_at,
+            "server_time": ver.now(), "sections": sections}
 
 
 @router.put("/attempts/{attempt_id}/answers")
@@ -196,6 +255,8 @@ async def autosave_answer(attempt_id: uuid.UUID, payload: SubmitAnswerRequest,
     await db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
     if attempt.status != AssessmentAttemptStatus.IN_PROGRESS:
         raise HTTPException(409, "Attempt already submitted")
+    if ver.expired(attempt, grace=True):
+        raise HTTPException(409, {"code": "ATTEMPT_EXPIRED", "message": "Time is up; your saved answers will be submitted."})
     aq = await db.get(AssessmentQuestion, payload.assessment_question_id)
     if aq is None or aq.assessment_id != attempt.assessment_id:
         raise HTTPException(404, "Question not in this assessment")
@@ -207,7 +268,12 @@ async def autosave_answer(attempt_id: uuid.UUID, payload: SubmitAnswerRequest,
     if payload.answer_text is not None:
         answer.answer_text = payload.answer_text
     if payload.selected_option_index is not None:
-        answer.selected_option_index = payload.selected_option_index
+        try:  # the client speaks in displayed positions; storage is the original option index
+            answer.selected_option_index = ver.to_original(attempt, aq.id, payload.selected_option_index)
+        except ValueError:
+            raise HTTPException(422, "Option index out of range")
+    if payload.marked_for_review is not None:
+        answer.marked_for_review = payload.marked_for_review
     await db.commit()
     return {"status": "saved", "answer_id": answer.id}
 
@@ -216,13 +282,22 @@ async def autosave_answer(attempt_id: uuid.UUID, payload: SubmitAnswerRequest,
 async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)),
                          db: AsyncSession = Depends(get_db)):
     """Idempotent: re-submitting a scored attempt returns it unchanged; evidence
-    rows are keyed per answer so nothing is double-counted."""
+    rows are keyed per answer so nothing is double-counted. Concurrent submits serialize on the attempt row."""
     attempt = await _own_attempt(db, user, attempt_id)
+    await db.execute(select(AssessmentAttempt.id).where(AssessmentAttempt.id == attempt.id).with_for_update())
+    await db.refresh(attempt)
     if attempt.status == AssessmentAttemptStatus.SCORED:
         return _student_attempt(attempt)
+    return await _finalize(db, attempt, user)
 
+
+async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) -> StudentAttemptView:
+    """Grades from the frozen version (never the live question rows)."""
+    attempt_id = attempt.id
+    if attempt.status == AssessmentAttemptStatus.SCORED:
+        return _student_attempt(attempt)
     gateway = get_ai_gateway()
-    all_aqs = (await db.scalars(select(AssessmentQuestion).where(AssessmentQuestion.assessment_id == attempt.assessment_id))).all()
+    fz = await ver.load_frozen(db, attempt)
     all_answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt_id)
                                     .order_by(AssessmentAnswer.updated_at))).all()
     answers, dup_answers = {}, {}
@@ -231,8 +306,8 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
             dup_answers.setdefault(a.assessment_question_id, []).append(answers[a.assessment_question_id])
         answers[a.assessment_question_id] = a
     total_points = earned = 0.0
-    for aq in all_aqs:
-        question = await db.get(Question, aq.question_id)
+    for question in fz.by_aq.values():
+        aq = SimpleNamespace(id=question.aq_id, points=question.points)
         answer = answers.get(aq.id)
         total_points += aq.points
         if answer is None:
@@ -292,6 +367,7 @@ async def submit_attempt(attempt_id: uuid.UUID, user: User = Depends(require_rol
 
     attempt.total_score = earned / total_points if total_points else 0.0
     attempt.status = AssessmentAttemptStatus.SCORED
+    attempt.submitted_at = ver.now()
     application = await db.get(Application, attempt.application_id)
     job = await db.get(Job, application.job_id)
     if ApplicationStatus(application.status) == ApplicationStatus.ASSESSMENT_PENDING:
@@ -320,11 +396,15 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
     attempt = await db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.application_id == application_id))
     if attempt is None:
         return None
+    if student and attempt.status == AssessmentAttemptStatus.IN_PROGRESS and ver.expired(attempt):
+        await _finalize(db, attempt, user)
+        await db.refresh(attempt)
+    fz = await ver.load_frozen(db, attempt)
     answers = (await db.scalars(select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id))).all()
     out = []
     for a in answers:
-        aq = await db.get(AssessmentQuestion, a.assessment_question_id)
-        q = await db.get(Question, aq.question_id)
+        aq = SimpleNamespace(id=a.assessment_question_id)
+        q = fz.by_aq[a.assessment_question_id]
         sub = await db.scalar(select(CodingSubmission).where(CodingSubmission.assessment_answer_id == a.id)
                               .order_by(CodingSubmission.created_at.desc()))
         tests = (await db.scalars(select(CodingTestResult).where(CodingTestResult.submission_id == sub.id)
@@ -343,7 +423,8 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
                           "status": coding_status(sub.passed_count, sub.total_count, [t.judge0_status for t in tests])}
             out.append(StudentAnswerView(
                 answer_id=a.id, assessment_question_id=aq.id, question_type=q.question_type, answer_text=a.answer_text,
-                selected_option_index=a.selected_option_index, completed=bool(a.answer_text or a.selected_option_index is not None),
+                selected_option_index=ver.to_displayed(attempt, aq.id, a.selected_option_index),
+                completed=bool(a.answer_text or a.selected_option_index is not None),
                 question_text=q.question_text if attempt.status == AssessmentAttemptStatus.SCORED else None, coding=coding))
             continue
         item.update({"question_text": q.question_text, "score": a.score, "is_correct": a.is_correct,

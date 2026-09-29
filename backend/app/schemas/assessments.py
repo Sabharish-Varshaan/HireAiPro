@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import AssessmentAttemptStatus
 from app.schemas.questions import QuestionOut, QuestionStudentOut
@@ -8,6 +8,13 @@ from app.schemas.questions import QuestionOut, QuestionStudentOut
 
 class GenerateAssessmentRequest(BaseModel):
     title: str
+    total_questions: int | None = Field(default=None, ge=6, le=30)
+
+
+class AssessmentConfigIn(BaseModel):
+    duration_minutes: int | None = Field(default=None, ge=5, le=240)
+    randomize_questions: bool | None = None
+    randomize_options: bool | None = None
 
 
 class AssessmentOut(BaseModel):
@@ -16,6 +23,7 @@ class AssessmentOut(BaseModel):
     title: str
     status: str
     total_duration_minutes: int
+    config: dict | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,3 +63,4 @@ class SubmitAnswerRequest(BaseModel):
     assessment_question_id: uuid.UUID
     answer_text: str | None = None
     selected_option_index: int | None = None
+    marked_for_review: bool | None = None

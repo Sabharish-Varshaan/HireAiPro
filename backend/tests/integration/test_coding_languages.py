@@ -21,19 +21,21 @@ SOLUTIONS = {  # sum of a JSON-style list read from stdin
 WRONG = {"python": "print(6)\n", "javascript": "console.log(6)\n", "cpp": "#include <iostream>\nint main(){std::cout<<6<<std::endl;}\n"}
 
 
-async def _setup(client, allowed=None):
+async def _setup(client, allowed=None, mutate=None):
     async with AsyncSessionLocal() as db:
         org, rec, _ = await make_company(db)
         job = await make_job(db, org, rec, [("Python", "required", 0.6, 1.0)])
         st, _, hs = await make_student(db)
         a, aqs, qs = await _published_assessment(db, org, job)
         qs[2].allowed_languages = allowed
+        if mutate:
+            mutate(qs[2])
         await db.commit()
     app_id = (await client.post("/applications", headers=hs, json={"job_id": str(job.id)})).json()["id"]
     attempt = (await client.post(f"/assessments/{a.id}/attempts", headers=hs, json={"application_id": app_id})).json()
     saved = (await client.put(f"/assessments/attempts/{attempt['id']}/answers", headers=hs,
                               json={"assessment_question_id": str(aqs[2].id), "answer_text": ""})).json()
-    detail = (await client.get(f"/assessments/{a.id}", headers=hs)).json()
+    detail = (await client.get(f"/assessments/attempts/{attempt['id']}", headers=hs)).json()  # frozen attempt session
     return st, hs, saved["answer_id"], qs[2], detail
 
 
@@ -98,20 +100,15 @@ async def test_three_languages_through_endpoint_and_judge0(client, lang):
 @pytest.mark.asyncio
 async def test_generated_starter_code_is_never_shown_to_students(client):
     from app.models.enums import QuestionSourceType
-    from app.models.questions import Question
 
-    _, hs, _, q, detail = await _setup(client)
+    def make_generated(q):
+        q.source_type, q.starter_code = QuestionSourceType.AI_GENERATED, "def solve():\n    return the_full_answer()\n"
+
+    _, _, _, _, kept = await _setup(client)
     code = lambda d: [x["question"] for s in d["sections"] for x in s["questions"] if x["question"]["question_type"] == "CODING"][0]  # noqa: E731
-    assert code(detail)["starter_code"] == "import ast,sys\n"  # recruiter-written starter is kept
-    async with AsyncSessionLocal() as db:
-        row = await db.get(Question, q.id)
-        row.source_type, row.starter_code = QuestionSourceType.AI_GENERATED, "def solve():\n    return the_full_answer()\n"
-        await db.commit()
-    from app.models.assessments import AssessmentQuestion
-    async with AsyncSessionLocal() as db:
-        aq = await db.scalar(select(AssessmentQuestion).where(AssessmentQuestion.question_id == q.id))
-    again = (await client.get(f"/assessments/{aq.assessment_id}", headers=hs)).json()
-    assert code(again)["starter_code"] is None and "test_cases" not in code(again)
+    assert code(kept)["starter_code"] == "import ast,sys\n"  # recruiter-written starter is kept
+    _, _, _, _, hidden = await _setup(client, mutate=make_generated)
+    assert code(hidden)["starter_code"] is None and "test_cases" not in code(hidden)
 
 
 @pytest.mark.asyncio

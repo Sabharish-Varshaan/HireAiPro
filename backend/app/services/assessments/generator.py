@@ -283,5 +283,5 @@ async def add_section(db: AsyncSession, assessment: Assessment, title: str, orde
     await db.flush()
 
 
-def blueprint_for(job_skills: list[dict]) -> Blueprint:
-    return build_blueprint(job_skills)
+def blueprint_for(job_skills: list[dict], target_total: int | None = None) -> Blueprint:
+    return build_blueprint(job_skills, target_total or 12)

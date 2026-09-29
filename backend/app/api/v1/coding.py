@@ -13,6 +13,7 @@ from app.models.questions import Question
 from app.models.users import User
 from app.schemas.coding import CodingSubmitRequest
 from app.schemas.student_views import StudentCodingResult, coding_status
+from app.services.assessments import versioning as ver
 from app.services.coding.judge0_client import ExecutionUnavailable, get_judge0_client
 from app.services.coding.languages import SUPPORTED_LANGUAGES, allowed_for_question, resolve_judge0_ids
 from app.services.evidence.service import record_evidence
@@ -34,8 +35,10 @@ async def submit_code(payload: CodingSubmitRequest, user: User = Depends(require
         raise HTTPException(404, "Answer not found in one of your attempts (save the answer first)")
     if attempt.status != AssessmentAttemptStatus.IN_PROGRESS:
         raise HTTPException(409, "Attempt already submitted")
+    if ver.expired(attempt, grace=True):
+        raise HTTPException(409, {"code": "ATTEMPT_EXPIRED", "message": "Time is up; your saved code will be submitted."})
     aq = await db.get(AssessmentQuestion, answer.assessment_question_id)
-    question = await db.get(Question, aq.question_id)
+    question = (await ver.load_frozen(db, attempt)).by_aq[aq.id]  # frozen content: tests cannot change mid-attempt
     if question.id != payload.question_id or QuestionType(question.question_type) != QuestionType.CODING or not question.test_cases:
         raise HTTPException(422, "Not a coding question with test cases")
     if payload.language not in allowed_for_question(question):

@@ -6,6 +6,7 @@ from app.models.assessments import (
     AssessmentAttempt,
     AssessmentQuestion,
     AssessmentSection,
+    AssessmentVersion,
 )
 from app.models.career import LearningPath, LearningPathStep, LearningResource
 from app.models.coding import CodingSubmission, CodingTestResult
