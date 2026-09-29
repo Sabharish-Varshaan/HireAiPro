@@ -3,6 +3,10 @@
 Status: **adopted** (2026-09-29). Judge0 now sandboxes code on this M4 Mac. The local fallback is
 unchanged and is used only when Judge0 is not running.
 
+## Languages
+Python 3.8.1, Node.js 22.23.3 and C++17 (GCC 12.2) — details, pins and the 38-case matrix in
+[JUDGE0_LANGUAGES.md](JUDGE0_LANGUAGES.md). The app now fails closed (503) when Judge0 is down.
+
 ## What was built
 | Component | Source | Pin / verification |
 |---|---|---|

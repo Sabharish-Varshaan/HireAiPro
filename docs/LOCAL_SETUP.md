@@ -61,9 +61,13 @@ Uses a cgroup-v2 Judge0 build from reviewed, pinned sources (`infra/judge0`, evi
 [JUDGE0_CGROUP_V2.md](JUDGE0_CGROUP_V2.md)); it sandboxes code on Docker Desktop / Apple Silicon.
 Results say `execution_backend: "judge0"`.
 
-If Judge0 is **not running**, Python submissions use the labelled local fallback
-(`execution_backend: "local_fallback"`, development only, **no sandbox**). Once Judge0 is reachable
-the client fails closed: a timeout or sandbox error is reported as such and never re-run locally.
+Three languages (Python 3, JavaScript/Node.js, C++17) — see [JUDGE0_LANGUAGES.md](JUDGE0_LANGUAGES.md).
+If Judge0 is unavailable the coding endpoint returns **503 `EXECUTION_SERVICE_UNAVAILABLE`** and
+nothing is scored. The unsandboxed local Python runner exists only as a developer opt-in and needs
+**both** `APP_ENV=development` and `ALLOW_UNSANDBOXED_CODE_EXECUTION=true` (default `false`).
+
+Memory: run heavy work under `scripts/memwatch.sh LOG -- cmd`; demo profile and measurements in
+[MEMORY_PROFILE.md](MEMORY_PROFILE.md).
 
 ## Tests
 ```bash

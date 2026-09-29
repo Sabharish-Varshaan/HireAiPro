@@ -26,3 +26,39 @@ Stopped with `docker stop` only; volumes `hotd_postgres_data`, `hotd_redis_data`
 `hotd_ollama_data` and all images kept. They have `restart: always`, so they return when Docker
 restarts; restart manually with `docker start rpg_db rpg_redis rpg_backend rpg_ollama …`.
 After stopping: free 75 %, Docker VM 3088 MB (they were near-idle; the main gain is no restart churn).
+
+## 2. Measurements this session (all under `scripts/memwatch.sh`, 15 % abort threshold)
+
+| Phase | Min free | Notes |
+|---|---|---|
+| Judge0 3-language matrix (38 cases, incl. 3 + 6 concurrent) | 76 % | 1 worker; Judge0 containers ≤ 502 MiB total |
+| isolate / API attack batteries | 57–58 % | |
+| Backend pytest (loads BGE-M3 in the test process) | 32–34 % | |
+| Live provider tests | 44 % | Ollama never resident |
+| Model warm-up (API + worker both warm) | 39 % | API 3.4 GB, worker 3.6 GB |
+| **Browser E2E, 4 h, 330 samples** | **28 %** (10:48, assessment generation) | **0 aborts** |
+
+E2E peaks: API 3496 MB, worker 5624 MB (assessment generation with reference-solution checks),
+Qdrant 390 MiB (1 GiB cap), Judge0 502 MiB, swap 2.8–4.5 GB. Idle after release: API ~190 MB,
+worker ~130 MB.
+
+## 3. Recommended demo profile
+
+```bash
+docker compose up -d postgres valkey qdrant                 # hotd/rpg_* stack stopped
+docker compose --profile judge0 up -d                       # Judge0: 1 worker, capped
+cd backend
+MODEL_IDLE_UNLOAD_SECONDS=1200 .venv/bin/uvicorn app.main:app --port 8020 &
+MODEL_IDLE_UNLOAD_SECONDS=1200 .venv/bin/celery -A app.workers.celery_app worker --pool=solo \
+  -Q documents,assessments,matching,knowledge,reports,celery &
+.venv/bin/python scripts/warm_demo_models.py --email <admin email>   # ~16 s per process
+```
+
+- `MODEL_IDLE_UNLOAD_SECONDS=1200` keeps BGE-M3 + reranker warm through a 20-minute presentation
+  (both warm cost ~7 GB; measured minimum 39 % free). Development default stays **300 s**.
+- Whisper is not warmed (first transcription ~8 s). Ollama stays unloaded (Groq/Luna serve normal
+  traffic). Keep `APP_ENV=demo` so unsandboxed code execution can never be enabled.
+- Close other heavy apps (Chrome used ~1.5 GB during this run).
+- Ollama fallback: `backend/.env` points at `localhost:11435`, but after the restart Ollama.app runs on
+  the default `11434` — align one of them or the emergency fallback is unreachable (reported as
+  `ollama: unreachable` on the admin page).

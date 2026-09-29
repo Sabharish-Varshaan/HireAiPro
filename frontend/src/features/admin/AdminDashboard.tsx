@@ -35,7 +35,7 @@ export default function AdminDashboard() {
         <div className="grid grid-cols-4 gap-3 text-sm">
           <div><p className="text-gray-500 text-xs">OpenAI today</p><p className="font-semibold">${usage?.openai_spend_today_usd?.toFixed(4) ?? "—"}</p></div>
           <div><p className="text-gray-500 text-xs">OpenAI last 10 days</p><p className="font-semibold">${usage?.openai_spend_10d_usd?.toFixed(4) ?? "—"}</p></div>
-          <div><p className="text-gray-500 text-xs">Daily soft / hard cap</p><p className="font-semibold">${providers?.budget?.soft_limit_usd} / ${providers?.budget?.hard_limit_usd}</p></div>
+          <div><p className="text-gray-500 text-xs">Daily soft / hard cap</p><p className="font-semibold">{providers?.budget ? `$${providers.budget.soft_limit_usd} / $${providers.budget.hard_limit_usd}` : "…"}</p></div>
           <div><p className="text-gray-500 text-xs">Budget state</p><p className="font-semibold">{providers?.budget?.state ?? "—"}</p></div>
         </div>
         <div className="flex gap-4 text-xs">
