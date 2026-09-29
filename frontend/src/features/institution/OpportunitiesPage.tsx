@@ -87,9 +87,23 @@ function OpportunityRow({
 
       {expanded && (
         <div className="border-t border-gray-100 p-4 bg-gray-50/50 space-y-4 text-xs">
+          {(op.hiring_process ?? []).length > 0 && (
+            <div className="space-y-1" data-testid="op-process">
+              <span className="font-semibold text-gray-700 block">Hiring process:</span>
+              <ol className="flex flex-wrap items-center gap-1.5">
+                {op.hiring_process.map((label: string, i: number) => (
+                  <li key={label} className="flex items-center gap-1.5">
+                    {i > 0 && <span aria-hidden="true" className="text-gray-300">→</span>}
+                    <Badge tone="gray">{label}</Badge>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
           {op.assessment && (
             <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-950 space-y-1" data-testid="op-assessment">
-              <span className="font-semibold block">Campus Technical Assessment:</span>
+              <span className="font-semibold block">Assessments:</span>
               <p>
                 {op.assessment.question_count} questions (
                 {Object.entries(op.assessment.types)

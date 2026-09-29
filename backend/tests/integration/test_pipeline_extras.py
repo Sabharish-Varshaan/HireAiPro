@@ -216,3 +216,60 @@ async def _other():
         r = await make_company(db, "AnaOther")
         await db.commit()
         return r
+
+
+@pytest.mark.asyncio
+async def test_a_structured_interview_cannot_be_ended_after_one_question(client, monkeypatch):
+    from app.api.v1 import interviews as iv_api
+    from app.schemas.rubric import RubricEvaluation
+    from app.services.interviews import pool as P
+    from tests.integration.test_hiring_pipeline import FakeGW
+
+    gw = FakeGW()
+    monkeypatch.setattr(P, "get_ai_gateway", lambda: gw)
+    monkeypatch.setattr(P, "retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(P, "to_source_refs", lambda docs: [])
+
+    async def ev(turn):
+        return RubricEvaluation(concept_accuracy=0.8, reasoning=0.8, completeness=0.8, communication=0.8, demonstrated_concepts=[], missing_concepts=[], evaluator_confidence=0.9)
+    monkeypatch.setattr(iv_api, "evaluate_turn_answer", ev)
+    async with AsyncSessionLocal() as db:
+        org, rec, hc = await make_company(db, "ShortCo")
+        job = await make_job(db, org, rec, SKILLS, status=JobStatus.PUBLISHED)
+        await configure_pipeline(db, job, [S.TECH_INTERVIEW])
+        stu, _, hs = await make_student(db)
+        app_ = await make_application(db, job, stu)
+        await db.commit()
+    await P.fill_pool(job.id)
+    iv = (await client.post("/interviews/start", headers=hs, json={"application_id": str(app_.id)})).json()
+    assert iv["question_budget"] >= 6 and iv["min_questions"] >= 6 and "plan" not in iv
+    t = (await client.post(f"/interviews/{iv['id']}/next-turn", headers=hs)).json()
+    await client.post(f"/interviews/turns/{t['id']}/answer", headers=hs, json={"answer_text": "A single detailed answer. " * 5})
+    early = await client.post(f"/interviews/{iv['id']}/finish", headers=hs)
+    assert early.status_code == 409 and early.json()["detail"]["code"] == "INTERVIEW_TOO_SHORT" and "at least" in early.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_technical_interview_length_follows_its_duration_when_no_count_is_given(client):
+    """Regression (found in the browser): changing the interview length sent an empty question count, which the server ignored,
+    so a '30 minute' interview kept the old 8-question length."""
+    from app.services.interviews import pool as P
+
+    async with AsyncSessionLocal() as db:
+        org, rec, hc = await make_company(db, "LenCo")
+        job = await make_job(db, org, rec, SKILLS, status=JobStatus.REQUIREMENTS_CONFIRMED)
+        await db.commit()
+    v = (await client.get(f"/hiring-pipeline/jobs/{job.id}", headers=hc)).json()
+    ti = next(s for s in v["stages"] if s["stage_type"] == S.TECH_INTERVIEW)
+    assert ti["question_count"] is None  # the default no longer pins a length
+    for minutes, expect in ((30, 6), (45, 9), (60, 10)):
+        body = {"stages": [{"stage_type": S.TECH_INTERVIEW, "enabled": True, "duration_minutes": minutes, "question_count": None,
+                            "config": {"min_questions": 6, "max_questions": 10}}]}
+        r = await client.put(f"/hiring-pipeline/jobs/{job.id}", headers=hc, json=body)
+        assert r.status_code == 200, r.text
+        async with AsyncSessionLocal() as db:
+            from app.models.jobs import Job
+
+            t = await P.upsert_template(db, await db.get(Job, job.id), S.TECH_INTERVIEW)
+            assert t.config["question_budget"] == expect and t.config["recommended_minutes"] == minutes
+            await db.commit()

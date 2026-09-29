@@ -121,11 +121,13 @@ async def start_interview(payload: StartInterviewRequest, user: User = Depends(r
         ranked = await rank_candidates(db, application.job_id, me.id, interview.id)
         interview.plan = {"stage_type": payload.stage_type, "blueprint": (tpl.config or {}).get("blueprint") if tpl else None,
                           "template_version": tpl.version if tpl else None, "question_budget": budget,
+                          "min_questions": (tpl.config or {}).get("min_questions") if tpl else None,
                           "competencies": [c.as_dict() for c in ranked[:settings.INTERVIEW_MAX_TURNS]], "pool": pool,
                           "rubric_version": "interview_rubric_v1"}
     else:
         interview.plan = {"stage_type": payload.stage_type, "categories": (tpl.config or {}).get("categories") if tpl else None,
                           "template_version": tpl.version if tpl else None, "question_budget": budget, "pool": pool,
+                          "min_questions": (tpl.config or {}).get("min_questions") if tpl else None,
                           "rubric_version": "hr_observation_v1"}
     if session is not None:
         session.interview_id = interview.id
@@ -304,6 +306,9 @@ async def finish_interview(interview_id: uuid.UUID, user: User = Depends(require
                                                                 InterviewTurn.student_answer_text.is_not(None)))).all()
     if not answered:
         raise HTTPException(409, "Answer at least one question first")
+    need = min(interview.min_questions or 1, interview.question_budget or 99)
+    if len(answered) < need:  # a structured interview is not over after one question
+        raise HTTPException(409, {"code": "INTERVIEW_TOO_SHORT", "message": f"Please answer at least {need} questions before finishing ({len(answered)} so far)."})
     await _complete(db, interview, user.id)
     return {"status": "COMPLETED"}
 

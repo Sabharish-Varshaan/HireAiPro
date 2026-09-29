@@ -55,6 +55,15 @@ class Interview(Base, UUIDPk, TimestampMixin):
     plan: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # session plan fixed at start: ranked competencies + template version
 
 
+    @property
+    def question_budget(self) -> int | None:
+        return (self.plan or {}).get("question_budget") or self.max_turns
+
+    @property
+    def min_questions(self) -> int | None:
+        return (self.plan or {}).get("min_questions")
+
+
 class InterviewTurn(Base, UUIDPk, TimestampMixin):
     __tablename__ = "interview_turns"
 

@@ -44,10 +44,18 @@ export function InterviewRunner({
   interviewId,
   mediaStream,
   onCompleted,
+  stageType = "TECHNICAL_INTERVIEW",
+  total,
+  minQuestions,
 }: {
   interviewId: string;
   mediaStream?: MediaStream | null;
   onCompleted?: () => void;
+  stageType?: string;
+  /** Planned number of questions (shown as progress). */
+  total?: number | null;
+  /** Earliest point at which the candidate may finish on their own. */
+  minQuestions?: number | null;
 }) {
   const qc = useQueryClient();
   const [answer, setAnswer] = useState("");
@@ -119,6 +127,8 @@ export function InterviewRunner({
   if (turns.isLoading) return <Loading label="Loading interview session…" />;
 
   const previousTurns = list.slice(0, pending ? list.length - 1 : list.length);
+  const answeredCount = list.filter((t) => t.student_answer_text).length;
+  const canFinish = answeredCount >= Math.min(minQuestions ?? 1, total ?? 99);
 
   return (
     <div className="space-y-5">
@@ -143,7 +153,7 @@ export function InterviewRunner({
                 <div key={t.id} className="pt-2 first:pt-0 space-y-1.5 text-xs">
                   <div className="flex items-center justify-between text-gray-500">
                     <span className="font-semibold text-gray-800">
-                      Question {t.turn_index + 1} · {t.skill_name}
+                      Question {t.turn_index + 1}{t.skill_name ? ` · ${t.skill_name}` : ""}
                     </span>
                     <Badge tone="gray">{t.answer_source ?? "text"}</Badge>
                   </div>
@@ -165,9 +175,9 @@ export function InterviewRunner({
         <div className="border-2 border-blue-600 bg-white rounded-xl p-5 shadow-sm space-y-4">
           <div className="flex items-center justify-between text-xs border-b border-gray-100 pb-2.5">
             <span className="font-bold text-blue-900 uppercase tracking-wider text-[11px]">
-              Active Question {current.turn_index + 1}
+              Question {current.turn_index + 1}{total ? ` of ${total}` : ""}
             </span>
-            <Badge tone="blue">{current.skill_name}</Badge>
+            {current.skill_name && <Badge tone="blue">{current.skill_name}</Badge>}
           </div>
 
           <p className="text-base font-semibold text-gray-950 leading-relaxed">
@@ -309,7 +319,7 @@ export function InterviewRunner({
               ? "Next Question"
               : "Begin Interview"}
           </Button>
-          {list.some((t) => t.student_answer_text) && (
+          {canFinish && (
             <Button variant="secondary" onClick={() => finish.mutate()} disabled={finish.isPending}>
               Finish Interview
             </Button>
@@ -319,7 +329,9 @@ export function InterviewRunner({
 
       {completedByAgent && (
         <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950 font-medium">
-          ✓ The interview has gathered sufficient evidence across required competencies — session completed.
+          {stageType === "HR_INTERVIEW"
+            ? "✓ That was the last question. Thank you: your answers have been shared with the hiring team."
+            : "✓ That was the last question. Thank you: your answers have been shared with the hiring team for review."}
         </div>
       )}
 

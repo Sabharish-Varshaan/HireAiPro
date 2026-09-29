@@ -12,6 +12,7 @@ import {
   SkeletonCard,
   humanize,
 } from "../../components/ui";
+import { pendingAction } from "../../lib/pipeline";
 
 const BAND_LABEL: Record<string, string> = {
   strong: "Strong",
@@ -181,6 +182,12 @@ export default function StudentDashboard() {
                   <div className="min-w-0">
                     <p className="font-medium text-gray-900 truncate">{a.job_title}</p>
                     <p className="text-xs text-gray-500">{a.organization_name}</p>
+                    {pendingAction(a) && (
+                      <p className="text-xs font-medium text-blue-700 mt-0.5" data-testid="pending-action">
+                        {pendingAction(a)}
+                        {a.stages_total ? <span className="text-gray-400 font-normal"> · {a.stages_done} of {a.stages_total} steps done</span> : null}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2.5 shrink-0">
                     <Badge>{a.status}</Badge>

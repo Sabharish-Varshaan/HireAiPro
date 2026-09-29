@@ -106,6 +106,11 @@ def validate_stage(s: StageIn) -> dict:
         if not 3 <= lo <= hi <= 10:
             raise S.PipelineError("HR interview length must be between 3 and 10 questions")
         clean.update(categories=list(dict.fromkeys(cats)), min_questions=lo, max_questions=hi)
+    if t in (S.TECHNICAL, S.CODING):
+        ids = cfg.get("skill_ids") or []
+        if not isinstance(ids, list) or len(ids) > 30 or any(not isinstance(x, str) for x in ids):
+            raise S.PipelineError("skill_ids must be a list of skill ids")
+        clean["skill_ids"] = ids  # empty = every confirmed skill of the job
     if t in S.ASSESSMENT_STAGES:
         clean["shuffle_questions"] = bool(cfg.get("shuffle_questions", t != S.CODING))
         clean["shuffle_options"] = bool(cfg.get("shuffle_options", t != S.CODING))
@@ -220,7 +225,8 @@ async def put_pipeline(job_id: uuid.UUID, payload: PipelineIn, user: User = Depe
         changed = (st.enabled != s_in.enabled and s_in.enabled) or st.question_count != s_in.question_count or (st.config or {}) != cleaned[t]
         st.enabled, st.required, st.proctored = s_in.enabled, s_in.required, s_in.proctored
         st.duration_minutes = s_in.duration_minutes or st.duration_minutes
-        st.question_count = s_in.question_count or st.question_count
+        # the technical interview's length comes from its duration unless a count is given, so an empty count must clear the old one
+        st.question_count = s_in.question_count if t == S.TECH_INTERVIEW else (s_in.question_count or st.question_count)
         st.config = cleaned[t]
         if changed and st.status in ("READY",):
             st.status = "DRAFT"  # the prepared content no longer matches the settings

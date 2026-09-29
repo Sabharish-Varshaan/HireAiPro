@@ -60,6 +60,13 @@ const LABEL_MAP: Record<string, string> = {
   INSTITUTION_ADMIN: "Institution Admin",
   FACULTY: "Faculty",
   DEPARTMENT_HEAD: "Department Head",
+  NEEDS_CONFIGURATION: "Needs configuration",
+  APTITUDE_ASSESSMENT: "Aptitude Assessment",
+  TECHNICAL_ASSESSMENT: "Technical Assessment",
+  CODING_ASSESSMENT: "Coding Assessment",
+  TECHNICAL_INTERVIEW: "Technical Interview",
+  HR_INTERVIEW: "HR Interview",
+  APTITUDE: "Aptitude",
   MCQ: "Multiple choice",
   TECHNICAL: "Written",
   CODING: "Coding",
@@ -189,7 +196,8 @@ const STATUS_TONE: Record<string, string> = {
   // Warning / pending
   PROCESSING: "amber", RUNNING: "amber", PENDING: "amber", IN_PROGRESS: "amber",
   SKILLS_EXTRACTED: "amber", ASSESSMENT_PENDING: "amber", INTERVIEW_PENDING: "amber",
-  UNDER_REVIEW: "amber", PREPARING: "amber",
+  UNDER_REVIEW: "amber", PREPARING: "amber", AVAILABLE: "blue", NEEDS_CONFIGURATION: "amber",
+  LOCKED: "gray", SKIPPED: "gray",
   // Neutral
   DRAFT: "gray", CLOSED: "gray", RETIRED: "gray", DISABLED: "gray",
   OPEN_MARKET: "gray", NOT_REQUIRED: "gray", INSTITUTION: "blue",
@@ -261,6 +269,7 @@ export function Button({
   type = "button",
   size = "md",
   icon,
+  "data-testid": testId,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -269,6 +278,7 @@ export function Button({
   type?: "button" | "submit";
   size?: "sm" | "md";
   icon?: ReactNode;
+  "data-testid"?: string;
 }) {
   const sizeCls = size === "sm" ? "text-xs px-2.5 py-1.5" : "text-sm px-3.5 py-2";
   return (
@@ -276,6 +286,7 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      data-testid={testId}
       className={`inline-flex items-center gap-1.5 rounded-md font-medium transition-colors duration-100 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:outline-none ${sizeCls} ${BTN_CLS[variant]}`}
     >
       {icon && <span className="w-4 h-4 shrink-0">{icon}</span>}

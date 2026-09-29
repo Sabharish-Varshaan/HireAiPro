@@ -15,6 +15,7 @@ import {
   humanize,
   questionTypeLabel,
 } from "../../components/ui";
+import { APTITUDE_CATEGORIES, HR_CATEGORY_LABEL } from "../../lib/pipeline";
 
 const NEXT: Record<string, string[]> = {
   DRAFT: ["VALIDATED", "REJECTED"],
@@ -44,6 +45,15 @@ function ImportResult({ r }: { r: any }) {
   );
 }
 
+const DOMAIN_LABEL: Record<string, string> = { TECHNICAL: "Technical", APTITUDE: "Aptitude", CODING: "Coding", TECHNICAL_INTERVIEW: "Technical interview", HR_INTERVIEW: "HR interview" };
+const DOMAIN_OPTIONS: [string, string][] = [
+  ["TECHNICAL", "Technical assessment"],
+  ["APTITUDE", "Aptitude assessment"],
+  ["CODING", "Coding assessment"],
+  ["TECHNICAL_INTERVIEW", "Technical interview"],
+  ["HR_INTERVIEW", "HR interview"],
+];
+
 export default function QuestionBankPage({
   organizationId,
   admin = false,
@@ -53,10 +63,12 @@ export default function QuestionBankPage({
 }) {
   const qc = useQueryClient();
   const [activeTab, setActiveTab] = useState<"browse" | "add" | "import">("browse");
-  const [filters, setFilters] = useState({ status: "", source_type: "", q: "" });
+  const [filters, setFilters] = useState({ status: "", source_type: "", q: "", domain: "" });
   const [form, setForm] = useState({
     question_text: "",
     question_type: "TECHNICAL",
+    domain: "TECHNICAL",
+    category: "",
     skill: "",
     difficulty: "medium",
     options: "",
@@ -85,23 +97,26 @@ export default function QuestionBankPage({
   const create = useMutation({
     onMutate: () => setResult(null),
     mutationFn: () => {
+      const domain = form.domain;
       const body: any = {
         question_text: form.question_text,
-        question_type: form.question_type,
-        skill: form.skill,
+        question_type: domain === "APTITUDE" ? "MCQ" : domain === "CODING" ? "CODING" : domain === "HR_INTERVIEW" || domain === "TECHNICAL_INTERVIEW" ? "TECHNICAL" : form.question_type,
         difficulty: form.difficulty,
         organization_id: organizationId,
+        domain: domain === "CODING" ? "TECHNICAL" : domain,
       };
-      if (form.question_type === "MCQ") {
+      if (domain !== "APTITUDE" && domain !== "HR_INTERVIEW") body.skill = form.skill;
+      if (domain === "APTITUDE" || domain === "HR_INTERVIEW") body.category = form.category;
+      if (body.question_type === "MCQ") {
         body.options = form.options.split("|").map((s) => s.trim()).filter(Boolean);
         body.correct_option = Number(form.correct_option);
       }
-      if (form.question_type === "TECHNICAL") {
+      if (body.question_type === "TECHNICAL" && domain !== "HR_INTERVIEW") {
         if (form.expected_concepts)
           body.expected_concepts = form.expected_concepts.split("|").map((s) => s.trim());
         if (form.criteria) body.rubric = { criteria: form.criteria.split("|").map((s) => s.trim()) };
       }
-      if (form.question_type === "CODING") body.test_cases = JSON.parse(form.test_cases || "[]");
+      if (body.question_type === "CODING") body.test_cases = JSON.parse(form.test_cases || "[]");
       return api.post("/questions", body);
     },
     onSuccess: (r) => {
@@ -196,43 +211,64 @@ export default function QuestionBankPage({
                 onChange={(e) => setForm({ ...form, question_text: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-700">Type</label>
+                <label htmlFor="qb-domain" className="text-xs font-medium text-gray-700">Used in</label>
                 <select
+                  id="qb-domain"
                   className={inputCls}
-                  value={form.question_type}
-                  onChange={(e) => setForm({ ...form, question_type: e.target.value })}
+                  value={form.domain}
+                  onChange={(e) => setForm({ ...form, domain: e.target.value, category: "", skill: "" })}
+                  data-testid="qb-domain"
                 >
-                  <option value="TECHNICAL">Technical Written</option>
-                  <option value="MCQ">Multiple Choice (MCQ)</option>
-                  <option value="CODING">Coding Challenge</option>
+                  {DOMAIN_OPTIONS.map(([v, l]) => (
+                    <option key={v} value={v}>{l}</option>
+                  ))}
                 </select>
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-700">Skill / Competency *</label>
-                <input
-                  className={inputCls}
-                  placeholder="e.g. Python, SQL"
-                  value={form.skill}
-                  onChange={(e) => setForm({ ...form, skill: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-700">Difficulty</label>
-                <select
-                  className={inputCls}
-                  value={form.difficulty}
-                  onChange={(e) => setForm({ ...form, difficulty: e.target.value })}
-                >
-                  <option value="easy">Easy</option>
-                  <option value="medium">Medium</option>
-                  <option value="hard">Hard</option>
-                </select>
-              </div>
+              {form.domain === "TECHNICAL" && (
+                <div className="space-y-1">
+                  <label htmlFor="qb-type" className="text-xs font-medium text-gray-700">Type</label>
+                  <select id="qb-type" className={inputCls} value={form.question_type} onChange={(e) => setForm({ ...form, question_type: e.target.value })}>
+                    <option value="TECHNICAL">Written</option>
+                    <option value="MCQ">Multiple choice</option>
+                  </select>
+                </div>
+              )}
+              {(form.domain === "APTITUDE" || form.domain === "HR_INTERVIEW") ? (
+                <div className="space-y-1">
+                  <label htmlFor="qb-category" className="text-xs font-medium text-gray-700">Category *</label>
+                  <select id="qb-category" className={inputCls} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} data-testid="qb-category">
+                    <option value="">Choose…</option>
+                    {(form.domain === "APTITUDE" ? APTITUDE_CATEGORIES : Object.keys(HR_CATEGORY_LABEL)).map((c) => (
+                      <option key={c} value={c}>{form.domain === "HR_INTERVIEW" ? HR_CATEGORY_LABEL[c] : c}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label htmlFor="qb-skill" className="text-xs font-medium text-gray-700">Skill / Competency *</label>
+                  <input id="qb-skill" className={inputCls} placeholder="e.g. Python, SQL" value={form.skill} onChange={(e) => setForm({ ...form, skill: e.target.value })} />
+                </div>
+              )}
+              {form.domain !== "HR_INTERVIEW" && (
+                <div className="space-y-1">
+                  <label htmlFor="qb-diff" className="text-xs font-medium text-gray-700">Difficulty</label>
+                  <select id="qb-diff" className={inputCls} value={form.difficulty} onChange={(e) => setForm({ ...form, difficulty: e.target.value })}>
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </div>
+              )}
             </div>
+            {form.domain === "HR_INTERVIEW" && (
+              <p className="text-xs text-gray-500 rounded-md bg-gray-50 border border-gray-200 p-2.5">
+                HR questions must be job-relevant. Anything touching protected or sensitive topics (religion, family plans, health, age and similar) is rejected.
+              </p>
+            )}
 
-            {form.question_type === "MCQ" && (
+            {(form.domain === "APTITUDE" || (form.domain === "TECHNICAL" && form.question_type === "MCQ")) && (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-gray-100">
                 <div className="sm:col-span-2 space-y-1">
                   <label className="text-xs font-medium text-gray-700">Options (separated by |)</label>
@@ -256,7 +292,7 @@ export default function QuestionBankPage({
               </div>
             )}
 
-            {form.question_type === "TECHNICAL" && (
+            {(form.domain === "TECHNICAL_INTERVIEW" || (form.domain === "TECHNICAL" && form.question_type === "TECHNICAL")) && (
               <div className="space-y-3 pt-2 border-t border-gray-100">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-gray-700">Expected Key Concepts (optional, separated by |)</label>
@@ -279,7 +315,7 @@ export default function QuestionBankPage({
               </div>
             )}
 
-            {form.question_type === "CODING" && (
+            {form.domain === "CODING" && (
               <div className="space-y-1 pt-2 border-t border-gray-100">
                 <label className="text-xs font-medium text-gray-700">Test Cases JSON</label>
                 <textarea
@@ -295,7 +331,7 @@ export default function QuestionBankPage({
             <div className="flex gap-2 pt-2">
               <Button
                 onClick={() => create.mutate()}
-                disabled={create.isPending || !form.question_text || !form.skill}
+                disabled={create.isPending || !form.question_text || (["APTITUDE", "HR_INTERVIEW"].includes(form.domain) ? !form.category : !form.skill)}
               >
                 {create.isPending ? "Validating…" : "Add to Question Bank"}
               </Button>
@@ -319,7 +355,8 @@ export default function QuestionBankPage({
                 onChange={(e) => e.target.files?.[0] && fileImport.mutate(e.target.files[0])}
               />
               <p className="text-xs text-gray-500">
-                Supported columns: question_text, question_type, skill, difficulty, options, correct_option, expected_concepts, test_cases
+                Supported columns: question_text, question_type, skill, difficulty, options, correct_option, expected_concepts, test_cases. This quick import saves
+                immediately. For an import you can review first (Excel template, validation, duplicate check), use <b>Question bank</b> inside a job.
               </p>
               <ErrorBox error={fileImport.error} />
             </div>
@@ -367,15 +404,30 @@ export default function QuestionBankPage({
             ) : null
           }
         >
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by where the question is used" data-testid="domain-filter">
+            {[["", "All"], ...DOMAIN_OPTIONS.map(([v, l]) => [v, l.replace(" assessment", "")])].map(([v, l]) => (
+              <button
+                key={v || "all"}
+                type="button"
+                aria-pressed={filters.domain === v}
+                onClick={() => setFilters({ ...filters, domain: v })}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${filters.domain === v ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"}`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <input
               className={inputCls}
+              aria-label="Search by question text"
               placeholder="Search by question text…"
               value={filters.q}
               onChange={(e) => setFilters({ ...filters, q: e.target.value })}
             />
             <select
               className={inputCls}
+              aria-label="Filter by status"
               value={filters.status}
               onChange={(e) => setFilters({ ...filters, status: e.target.value })}
             >
@@ -388,6 +440,7 @@ export default function QuestionBankPage({
             </select>
             <select
               className={inputCls}
+              aria-label="Filter by origin"
               value={filters.source_type}
               onChange={(e) => setFilters({ ...filters, source_type: e.target.value })}
             >
@@ -416,7 +469,7 @@ export default function QuestionBankPage({
           )}
 
           {list.data?.length > 0 && (
-            <Table head={["Question", "Competency", "Type", "Origin", "Status", "Actions"]}>
+            <Table head={["Question", filters.domain === "APTITUDE" || filters.domain === "HR_INTERVIEW" ? "Category" : "Skill / category", "Type", "Origin", "Status", "Actions"]}>
               {list.data.map((q: any) => (
                 <tr key={q.id} className="align-top hover:bg-gray-50/50">
                   <td className="py-2.5 pr-3 max-w-md">
@@ -427,7 +480,7 @@ export default function QuestionBankPage({
                       </div>
                     )}
                   </td>
-                  <td className="pr-3 text-xs font-medium text-gray-700 whitespace-nowrap">{q.skill_name}</td>
+                  <td className="pr-3 text-xs font-medium text-gray-700 whitespace-nowrap">{q.skill_name ?? (q.domain === "HR_INTERVIEW" ? HR_CATEGORY_LABEL[q.category] ?? q.category : q.category) ?? "—"}<span className="block text-[11px] font-normal text-gray-400">{DOMAIN_LABEL[q.domain] ?? "Technical"}</span></td>
                   <td className="pr-3">
                     <Badge tone="gray">{questionTypeLabel(q.question_type)}</Badge>
                   </td>

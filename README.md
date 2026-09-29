@@ -71,6 +71,7 @@ aloud by the browser with Replay/Mute.
 ## Docs
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design
+- [`docs/HIRING_PIPELINE.md`](docs/HIRING_PIPELINE.md) — per-job hiring process: aptitude, technical, coding, technical interview and HR interview stages (audit and design: [`docs/HIRING_PIPELINE_ARCHITECTURE.md`](docs/HIRING_PIPELINE_ARCHITECTURE.md))
 - [`docs/DATA_FLOW.md`](docs/DATA_FLOW.md) — end-to-end pipelines
 - [`docs/AI_RULES.md`](docs/AI_RULES.md) — what AI may/may not decide, and where that's enforced in code
 - [`docs/SCORING.md`](docs/SCORING.md) — skill_scoring_v1 and matching_v1 formulas

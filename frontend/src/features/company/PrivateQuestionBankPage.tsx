@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { SkillPicker } from "../../components/SkillPicker";
 import {
@@ -29,6 +29,18 @@ const STATUS_LABEL: Record<string, string> = {
   DUPLICATE: "Duplicate",
   NEEDS_SKILL_MAPPING: "Needs skill mapping",
 };
+const DOMAINS: [string, string][] = [
+  ["TECHNICAL", "Technical"],
+  ["APTITUDE", "Aptitude"],
+  ["TECHNICAL_INTERVIEW", "Technical interview"],
+  ["HR_INTERVIEW", "HR interview"],
+];
+const DOMAIN_NOTE: Record<string, string> = {
+  TECHNICAL: "Multiple-choice and written questions on your job's skills.",
+  APTITUDE: "Multiple-choice aptitude questions, grouped by category (no skill needed).",
+  TECHNICAL_INTERVIEW: "Open questions on a skill. They are used when the technical interview's question pool is prepared.",
+  HR_INTERVIEW: "Job-relevant behavioural questions by topic. Sensitive topics are rejected.",
+};
 const TYPE_LABEL: Record<string, string> = {
   MCQ: "MCQ",
   TECHNICAL: "Written",
@@ -46,13 +58,43 @@ async function download(url: string, params: Record<string, string>, fallback: s
   URL.revokeObjectURL(a.href);
 }
 
-function Coverage({ jobId }: { jobId: string }) {
+function Coverage({ jobId, domain }: { jobId: string; domain: string }) {
   const cov = useQuery({
-    queryKey: ["question-coverage", jobId],
-    queryFn: () => api.get("/question-imports/coverage", { params: { job_id: jobId } }).then((r) => r.data),
+    queryKey: ["question-coverage", jobId, domain],
+    enabled: domain === "TECHNICAL" || domain === "APTITUDE",
+    queryFn: () => api.get("/question-imports/coverage", { params: { job_id: jobId, domain } }).then((r) => r.data),
   });
+  if (domain !== "TECHNICAL" && domain !== "APTITUDE")
+    return (
+      <Card title="Coverage" description="Interview questions are chosen by topic or competency when the interview pool is prepared.">
+        <Empty>Your private questions in this domain are used first; anything missing is filled when the pool is prepared.</Empty>
+      </Card>
+    );
   if (cov.isLoading) return <Loading />;
   const c = cov.data;
+  if (domain === "APTITUDE")
+    return (
+      <Card
+        title="Aptitude coverage for this job"
+        description="Your private aptitude questions against the category mix set in the Hiring Process tab."
+        actions={c?.needed ? <Badge tone={c.gap === 0 ? "green" : "amber"}>{`${c.covered} / ${c.needed} questions covered`}</Badge> : null}
+      >
+        {(c?.rows ?? []).length === 0 ? (
+          <Empty>Turn on the Aptitude Assessment and choose its categories in the Hiring Process tab to see coverage.</Empty>
+        ) : (
+          <Table head={["Category", "Questions needed", "Your private questions", "Platform approved"]}>
+            {c.rows.map((r: any) => (
+              <tr key={r.category}>
+                <td className="py-2 pr-3 font-medium text-gray-900">{r.category}</td>
+                <td className="pr-3 text-xs font-semibold">{r.needed}</td>
+                <td className="pr-3 text-xs font-medium text-blue-700">{r.available_private}</td>
+                <td className="pr-3 text-xs text-gray-600">{r.available_platform}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+    );
   return (
     <Card
       title="Slot Coverage for this Job"
@@ -95,7 +137,7 @@ function Coverage({ jobId }: { jobId: string }) {
   );
 }
 
-function ImportPanel({ jobId }: { jobId: string }) {
+function ImportPanel({ jobId, domain }: { jobId: string; domain: string }) {
   const qc = useQueryClient();
   const [batch, setBatch] = useState<any>(null);
   const [done, setDone] = useState<any>(null);
@@ -103,7 +145,7 @@ function ImportPanel({ jobId }: { jobId: string }) {
     mutationFn: (file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      return api.post("/question-imports", fd, { params: { job_id: jobId } }).then((r) => r.data);
+      return api.post("/question-imports", fd, { params: { job_id: jobId, domain } }).then((r) => r.data);
     },
     onSuccess: (b) => {
       setBatch(b);
@@ -126,7 +168,7 @@ function ImportPanel({ jobId }: { jobId: string }) {
   });
   const [tplErr, setTplErr] = useState<string | null>(null);
   const tpl = (format: string) =>
-    download("/question-imports/template", { job_id: jobId, format }, `questions-template.${format}`).catch(() =>
+    download("/question-imports/template", { job_id: jobId, format, domain }, `${domain.toLowerCase()}-questions-template.${format}`).catch(() =>
       setTplErr("Could not download the template")
     );
 
@@ -178,7 +220,7 @@ function ImportPanel({ jobId }: { jobId: string }) {
               <b>{batch.duplicate_rows}</b> duplicate, out of {batch.total_rows} total rows.
             </div>
             <div className="overflow-x-auto">
-              <Table head={["Row", "Type", "Skill (raw)", "Canonical", "Diff.", "Question", "Status", "Duplicate", "Action"]}>
+              <Table head={["Row", "Type", domain === "TECHNICAL" || domain === "TECHNICAL_INTERVIEW" ? "Skill (raw)" : "Category", domain === "TECHNICAL" || domain === "TECHNICAL_INTERVIEW" ? "Canonical" : "Used in", "Diff.", "Question", "Status", "Duplicate", "Action"]}>
                 {batch.rows.map((r: any) => (
                   <tr
                     key={r.row}
@@ -189,8 +231,8 @@ function ImportPanel({ jobId }: { jobId: string }) {
                     <td className="pr-2 text-xs">
                       <Badge tone="gray">{TYPE_LABEL[r.question_type] ?? r.raw.question_type ?? "—"}</Badge>
                     </td>
-                    <td className="pr-2 text-xs text-gray-700">{r.raw.skill || "—"}</td>
-                    <td className="pr-2 text-xs font-medium text-gray-900">{r.canonical_skill ?? "—"}</td>
+                    <td className="pr-2 text-xs text-gray-700">{r.domain === "APTITUDE" || r.domain === "HR_INTERVIEW" ? r.category ?? "—" : r.raw.skill || "—"}</td>
+                    <td className="pr-2 text-xs font-medium text-gray-900">{r.domain === "APTITUDE" || r.domain === "HR_INTERVIEW" ? (DOMAINS.find(([v]) => v === r.domain)?.[1] ?? "—") : r.canonical_skill ?? "—"}</td>
                     <td className="pr-2 text-xs">{r.difficulty ?? "—"}</td>
                     <td className="pr-2 max-w-xs">
                       <span className="line-clamp-2 text-xs text-gray-800">{r.raw.question_text}</span>
@@ -367,16 +409,16 @@ function AddQuestion({ orgId, onDone }: { orgId: string; onDone: () => void }) {
   );
 }
 
-function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; jobId: string }) {
+function Browse({ orgId, assessment, jobId, domain }: { orgId: string; assessment: any; jobId: string; domain: string }) {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [type, setType] = useState("");
   const list = useQuery({
-    queryKey: ["my-questions", orgId, q, type],
+    queryKey: ["my-questions", orgId, q, type, domain],
     queryFn: () =>
       api
         .get("/questions", {
-          params: { organization_id: orgId, q: q || undefined, question_type: type || undefined },
+          params: { organization_id: orgId, q: q || undefined, question_type: type || undefined, domain },
         })
         .then((r) => r.data),
   });
@@ -388,13 +430,15 @@ function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; 
   const inAssessment = new Set(
     (detail.data?.sections ?? []).flatMap((s: any) => s.questions.map((x: any) => x.question.id))
   );
-  const canEdit = !assessment || assessment.status !== "PUBLISHED";
+  const attachable = domain === "TECHNICAL" || domain === "APTITUDE";
+  const canEdit = attachable && (!assessment || assessment.status !== "PUBLISHED") && !(domain === "APTITUDE" && !assessment);
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["assessment-detail"] });
     qc.invalidateQueries({ queryKey: ["question-coverage"] });
   };
   const attach = useMutation({
-    mutationFn: (id: string) => api.post(`/assessments/jobs/${jobId}/questions`, { question_id: id }),
+    mutationFn: (id: string) =>
+      assessment?.id ? api.post(`/assessments/${assessment.id}/questions`, { question_id: id }) : api.post(`/assessments/jobs/${jobId}/questions`, { question_id: id }),
     onSuccess: () => {
       refresh();
       qc.invalidateQueries({ queryKey: ["assessment-by-job"] });
@@ -424,7 +468,7 @@ function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; 
       </div>
       {list.isLoading && <Loading />}
       {!list.isLoading && mine.length === 0 && (
-        <Empty>No private questions found. Import or add some above.</Empty>
+        <Empty>No private questions found in this area yet. Import a spreadsheet above.</Empty>
       )}
       <ul className="divide-y divide-gray-100 text-sm" data-testid="my-questions">
         {mine.map((x: any) => (
@@ -433,7 +477,7 @@ function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; 
               <p className="font-medium text-gray-900 leading-snug">{x.question_text}</p>
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <Badge tone="gray">{TYPE_LABEL[x.question_type] ?? x.question_type}</Badge>
-                <span>{x.skill_name}</span>
+                <span>{x.skill_name ?? x.category ?? "—"}</span>
                 <span>•</span>
                 <span>{x.difficulty}</span>
                 <span>•</span>
@@ -452,6 +496,8 @@ function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; 
                   </Button>
                 ))}
               {!canEdit && assessment && inAssessment.has(x.id) && <Badge tone="green">In assessment</Badge>}
+              {!attachable && <span className="text-xs text-gray-400">Used when the interview pool is prepared</span>}
+              {domain === "APTITUDE" && !assessment && <span className="text-xs text-gray-400">Generate the Aptitude stage first</span>}
             </div>
           </li>
         ))}
@@ -464,10 +510,14 @@ function Browse({ orgId, assessment, jobId }: { orgId: string; assessment: any; 
 export default function PrivateQuestionBankPage() {
   const { jobId } = useParams();
   const qc = useQueryClient();
+  const [sp, setSp] = useSearchParams();
+  const domain = DOMAINS.some(([v]) => v === sp.get("domain")) ? sp.get("domain")! : "TECHNICAL";
   const job = useQuery({ queryKey: ["job", jobId], queryFn: () => api.get(`/jobs/${jobId}`).then((r) => r.data) });
   const assessment = useQuery({
-    queryKey: ["assessment-by-job", jobId],
-    queryFn: () => api.get(`/assessments/by-job/${jobId}`).then((r) => r.data),
+    queryKey: ["assessment-by-job", jobId, domain],
+    enabled: domain === "TECHNICAL" || domain === "APTITUDE",
+    queryFn: () =>
+      api.get(`/assessments/by-job/${jobId}`, { params: domain === "APTITUDE" ? { stage_type: "APTITUDE_ASSESSMENT" } : {} }).then((r) => r.data),
   });
 
   if (job.isLoading) return <Loading />;
@@ -485,18 +535,40 @@ export default function PrivateQuestionBankPage() {
           </span>
         }
       />
-      <Coverage jobId={jobId!} />
-      <div className="flex gap-2">
-        <AddQuestion
-          orgId={job.data.organization_id}
-          onDone={() => {
-            qc.invalidateQueries({ queryKey: ["my-questions"] });
-            qc.invalidateQueries({ queryKey: ["question-coverage"] });
-          }}
-        />
+      <div>
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Question area" data-testid="bank-domain">
+          {DOMAINS.map(([v, l]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={domain === v}
+              onClick={() => setSp({ domain: v })}
+              className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${domain === v ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"}`}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-gray-500">{DOMAIN_NOTE[domain]} Coding problems are generated and verified against tests, so they are not imported.</p>
       </div>
-      <ImportPanel jobId={jobId!} />
-      <Browse orgId={job.data.organization_id} assessment={assessment.data} jobId={jobId!} />
+      <Coverage jobId={jobId!} domain={domain} />
+      {domain === "TECHNICAL" ? (
+        <div className="flex gap-2">
+          <AddQuestion
+            orgId={job.data.organization_id}
+            onDone={() => {
+              qc.invalidateQueries({ queryKey: ["my-questions"] });
+              qc.invalidateQueries({ queryKey: ["question-coverage"] });
+            }}
+          />
+        </div>
+      ) : (
+        <p className="text-xs text-gray-500">
+          Add single aptitude or interview questions in the <Link className="font-medium text-blue-700 hover:underline" to="/company/questions">company Question bank</Link>, or import many below.
+        </p>
+      )}
+      <ImportPanel jobId={jobId!} domain={domain} />
+      <Browse orgId={job.data.organization_id} assessment={assessment.data} jobId={jobId!} domain={domain} />
     </div>
   );
 }

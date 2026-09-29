@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.agents import interview_agent as IA
 from app.core.database import AsyncSessionLocal
 from app.models.enums import ApplicationStatus, QuestionStatus, QuestionType, Visibility
-from app.models.interviews import InterviewPoolQuestion, InterviewTemplate, InterviewTurn
+from app.models.interviews import Interview, InterviewPoolQuestion, InterviewTemplate, InterviewTurn
 from app.models.questions import Question
 from app.services.interviews import pool as P
 from tests.factories import make_application, make_company, make_job, make_student, skill
@@ -191,7 +191,11 @@ async def test_slow_scoring_never_blocks_the_next_question_and_is_recorded_once(
     assert n == 1 and calls["n"] == 1  # scored exactly once; the re-answer below is a no-op
     again = await client.post(f"/interviews/turns/{q1['id']}/answer", headers=ctx["hs"], json={"answer_text": "ignored", "answer_source": "text"})
     assert again.status_code == 200 and calls["n"] == 1
-    # finishing waits for any unscored answers so the recruiter's evidence is complete
+    # finishing waits for any unscored answers so the recruiter's evidence is complete (the minimum is lowered: this test is about scoring, not length)
+    async with AsyncSessionLocal() as db:
+        itv = await db.get(Interview, iv["id"])
+        itv.plan = {**(itv.plan or {}), "min_questions": 2}
+        await db.commit()
     a2 = await client.post(f"/interviews/turns/{q2.json()['id']}/answer", headers=ctx["hs"], json={"answer_text": "Second answer " * 5, "answer_source": "text"})
     assert a2.status_code == 200
     fin = await client.post(f"/interviews/{iv['id']}/finish", headers=ctx["hs"])

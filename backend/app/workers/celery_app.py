@@ -26,6 +26,7 @@ celery_app.conf.update(
         "jobs.*": {"queue": "documents"},
         "resumes.*": {"queue": "documents"},
         "assessments.*": {"queue": "assessments"},
+        "pipeline.*": {"queue": "assessments"},
         "matching.*": {"queue": "matching"},
         "knowledge.*": {"queue": "knowledge"},
         "reports.*": {"queue": "reports"},

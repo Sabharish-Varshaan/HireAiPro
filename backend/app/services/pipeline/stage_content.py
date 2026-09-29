@@ -126,10 +126,24 @@ async def generate_skill_stage(db: AsyncSession, job: Job, stage: HiringStage, a
     if not skills:
         raise StageContentError("Confirm the job's skill requirements first")
     cfg = stage.config or {}
+    chosen = set(cfg.get("skill_ids") or [])
+    if chosen:  # the recruiter picked which skills this stage covers
+        skills = [s for s in skills if str(s["skill_id"]) in chosen] or skills
     total = int(stage.question_count or S.DEFAULTS[stage.stage_type]["question_count"])
+    skill_difficulty: dict[str, str] = {}
     if stage.stage_type == S.TECHNICAL:
         allocs = technical_allocations(skills, total, float(cfg.get("mcq_share", 40)))
         difficulty = "medium"
+        mix = cfg.get("difficulty") or {}
+        if mix:  # the difficulty mix is spread over the skills' questions (each skill's generated questions use its slice's middle difficulty)
+            ladder = [d for d, n in largest_remainder(total, {d: float(mix.get(d, 0)) for d in DIFFICULTIES}).items() for _ in range(n)]
+            ladder.sort(key=DIFFICULTIES.index)
+            pos = 0
+            for a in allocs:
+                n = a.mcq_count + a.technical_count
+                part = ladder[pos:pos + n] or ["medium"]
+                skill_difficulty[str(a.skill_id)] = part[len(part) // 2]
+                pos += n
     else:
         allocs = coding_allocations(skills, total)
         difficulty = cfg.get("difficulty", "medium") if cfg.get("difficulty") in DIFFICULTIES else "medium"
@@ -157,6 +171,7 @@ async def generate_skill_stage(db: AsyncSession, job: Job, stage: HiringStage, a
                 w.reused_platform += len(found)
         w.platform_searched = True
         if any(w.remaining(t) > 0 for t in w.need):
+            d.difficulty = skill_difficulty.get(str(w.alloc.skill_id), difficulty)
             await _generate_for(d, i)
     dropped = await _drop_cross_skill_duplicates(d)
     blueprint_json = {"allocations": [{"skill_id": str(a.skill_id), "skill_name": a.skill_name, "mcq_count": a.mcq_count,
@@ -226,7 +241,7 @@ async def _apt_pick_existing(db: AsyncSession, org_id: uuid.UUID, cat: str, diff
     return None
 
 
-async def _apt_generate(db: AsyncSession, job: Job, cat: str, diff: str, slot: int, taken_hashes: set[str], attempts: int = 3) -> Question | None:
+async def _apt_generate(db: AsyncSession, job: Job, cat: str, diff: str, slot: int, taken_hashes: set[str], attempts: int = 4) -> Question | None:
     gw = get_ai_gateway()
     hint = APT_CATEGORY_HINT.get(cat, "a clear, self-contained problem with one correct answer")
     for attempt in range(attempts):

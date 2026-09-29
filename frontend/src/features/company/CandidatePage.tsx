@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { ProctoringPanel } from "../proctoring/ProctoringPanel";
+import { StageResultCard, StageTimeline } from "./CandidateStages";
 import {
   Badge,
   Button,
@@ -16,7 +17,6 @@ import {
   inputCls,
   pct,
   humanize,
-  questionTypeLabel,
 } from "../../components/ui";
 
 export function MatchExplanation({ match }: { match: any }) {
@@ -95,9 +95,7 @@ export default function CandidatePage() {
   const { applicationId } = useParams();
   const qc = useQueryClient();
   const [note, setNote] = useState("");
-  const [activeTab, setActiveTab] = useState<
-    "overview" | "assessment" | "interview" | "evidence" | "proctoring" | "decision"
-  >("overview");
+  const [activeTab, setActiveTab] = useState<string>("overview");
 
   const app = useQuery({
     queryKey: ["application", applicationId],
@@ -123,18 +121,9 @@ export default function CandidatePage() {
     enabled: !!sid,
     queryFn: () => api.get(`/evidence/students/${sid}/evidence`).then((r) => r.data),
   });
-  const attempt = useQuery({
-    queryKey: ["cand-attempt", applicationId],
-    queryFn: () => api.get(`/assessments/attempts/by-application/${applicationId}`).then((r) => r.data),
-  });
-  const interview = useQuery({
-    queryKey: ["cand-interview", applicationId],
-    queryFn: () => api.get(`/interviews/by-application/${applicationId}`).then((r) => r.data),
-  });
-  const turns = useQuery({
-    queryKey: ["cand-turns", interview.data?.id],
-    enabled: !!interview.data?.id,
-    queryFn: () => api.get(`/interviews/${interview.data.id}/turns`).then((r) => r.data),
+  const pipeline = useQuery({
+    queryKey: ["cand-pipeline", applicationId],
+    queryFn: () => api.get(`/hiring-pipeline/applications/${applicationId}`).then((r) => r.data),
   });
 
   const compute = useMutation({
@@ -157,6 +146,8 @@ export default function CandidatePage() {
   const matchMissing = (match.error as any)?.response?.status === 404;
 
   const availableDecisions = DECISIONS[a.status] ?? [];
+  const stages: any[] = pipeline.data?.stages ?? [];
+  const activeStage = activeTab.startsWith("stage:") ? stages.find((s) => `stage:${s.stage_type}` === activeTab) : null;
 
   return (
     <div className="max-w-5xl space-y-6">
@@ -176,17 +167,20 @@ export default function CandidatePage() {
         }
       />
 
+      <Card title="Hiring stages" description="Where this candidate is in this role's hiring process.">
+        <StageTimeline stages={stages} applicationStatus={a.status} />
+      </Card>
+
       <Tabs
         tabs={[
           { id: "overview", label: "Overview & Fit" },
-          { id: "assessment", label: "Assessment" },
-          { id: "interview", label: "AI Interview" },
+          ...stages.map((s: any) => ({ id: `stage:${s.stage_type}`, label: s.label })),
           { id: "evidence", label: `Evidence (${evidence.data?.length ?? 0})` },
           { id: "proctoring", label: "Proctoring" },
           { id: "decision", label: "Status & Decision" },
         ]}
         current={activeTab}
-        onChange={(t) => setActiveTab(t as any)}
+        onChange={(t) => setActiveTab(t)}
       />
 
       {activeTab === "overview" && (
@@ -237,114 +231,9 @@ export default function CandidatePage() {
         </div>
       )}
 
-      {activeTab === "assessment" && (
+      {activeStage && (
         <div className="space-y-5">
-          <Card
-            title="Assessment Results"
-            actions={attempt.data ? <Badge>{attempt.data.attempt.status}</Badge> : null}
-          >
-            {!attempt.data ? (
-              <Empty>The candidate has not started the technical assessment yet.</Empty>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
-                  <span className="text-sm font-medium text-gray-700">Total Scored Result</span>
-                  <span className="text-xl font-bold text-gray-900">{pct(attempt.data.attempt.total_score, 1)}</span>
-                </div>
-                <Table head={["Type", "Question", "Candidate Response", "Score", "Evaluation"]}>
-                  {attempt.data.answers.map((x: any) => (
-                    <tr key={x.answer_id} className="align-top hover:bg-gray-50/50">
-                      <td className="py-2.5 pr-3">
-                        <Badge tone="gray">{questionTypeLabel(x.question_type)}</Badge>
-                      </td>
-                      <td className="pr-3 max-w-xs text-xs text-gray-800 leading-relaxed">{x.question_text}</td>
-                      <td className="pr-3 max-w-xs text-xs text-gray-600">
-                        {x.question_type === "MCQ" ? (
-                          <span>
-                            Option {x.selected_option_index ?? "—"}{" "}
-                            {x.is_correct ? (
-                              <span className="text-emerald-700 font-bold">✓ Correct</span>
-                            ) : (
-                              <span className="text-red-600 font-bold">✗ Incorrect</span>
-                            )}
-                          </span>
-                        ) : x.question_type === "CODING" ? (
-                          x.coding ? (
-                            <span>
-                              {x.coding.passed}/{x.coding.total} tests passed ({x.coding.language ?? "?"})
-                            </span>
-                          ) : (
-                            "Not submitted"
-                          )
-                        ) : (
-                          x.answer_text ?? "—"
-                        )}
-                      </td>
-                      <td className="pr-3 text-xs font-semibold">{x.score == null ? "—" : x.score.toFixed(2)}</td>
-                      <td className="text-xs text-gray-500">
-                        {x.rubric_evaluation
-                          ? `Concept accuracy: ${pct(x.rubric_evaluation.concept_accuracy)}${
-                              x.rubric_evaluation.missing_concepts?.length
-                                ? `; missing: ${x.rubric_evaluation.missing_concepts.join(", ")}`
-                                : ""
-                            }`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </Table>
-              </div>
-            )}
-          </Card>
-        </div>
-      )}
-
-      {activeTab === "interview" && (
-        <div className="space-y-5">
-          <Card
-            title="AI Conversational Interview"
-            actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}
-          >
-            {!interview.data ? (
-              <Empty>Interview has not been taken yet.</Empty>
-            ) : (
-              <div className="space-y-3">
-                {(turns.data ?? []).map((t: any) => (
-                  <div key={t.id} className="border border-gray-200 rounded-lg p-3.5 space-y-2 bg-white">
-                    <div className="flex items-center justify-between text-xs text-gray-500">
-                      <span className="font-semibold text-gray-800">
-                        Turn {t.turn_index + 1}: {t.skill_name}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <Badge tone="gray">{t.difficulty}</Badge>
-                        <span>via {t.answer_source ?? "text"}</span>
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-900 font-medium">{t.question_text}</p>
-                    {t.student_answer_text && (
-                      <div className="p-2.5 bg-gray-50 rounded border border-gray-100 text-xs text-gray-800">
-                        <p className="font-semibold text-gray-600 mb-0.5">Candidate answer:</p>
-                        <p className="whitespace-pre-wrap">{t.student_answer_text}</p>
-                      </div>
-                    )}
-                    {t.rubric_evaluation && (
-                      <div className="flex flex-wrap gap-3 text-xs text-gray-500 pt-1">
-                        <span>
-                          Accuracy: <b>{pct(t.rubric_evaluation.concept_accuracy)}</b>
-                        </span>
-                        <span>
-                          Reasoning: <b>{pct(t.rubric_evaluation.reasoning)}</b>
-                        </span>
-                        <span>
-                          Confidence: <b>{pct(t.rubric_evaluation.evaluator_confidence)}</b>
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
+          <StageResultCard applicationId={applicationId!} stage={activeStage} />
         </div>
       )}
 

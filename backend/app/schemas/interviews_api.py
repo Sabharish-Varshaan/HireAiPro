@@ -14,6 +14,8 @@ class InterviewOut(BaseModel):
     job_id: uuid.UUID
     status: str
     max_turns: int | None = None
+    question_budget: int | None = None
+    min_questions: int | None = None
     stage_type: str = "TECHNICAL_INTERVIEW"
 
     model_config = ConfigDict(from_attributes=True)

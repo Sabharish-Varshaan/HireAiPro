@@ -1,3 +1,4 @@
+import { pendingAction } from "../../lib/pipeline";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
@@ -58,6 +59,12 @@ export default function ApplicationsPage() {
                   <Badge>{a.status}</Badge>
                 </div>
                 <p className="text-xs text-gray-500 font-medium">{a.organization_name}</p>
+                {pendingAction(a) && (
+                  <p className="text-xs font-medium text-blue-700" data-testid="pending-action">
+                    {pendingAction(a)}
+                    {a.stages_total ? <span className="text-gray-400 font-normal"> · {a.stages_done} of {a.stages_total} steps done</span> : null}
+                  </p>
+                )}
                 {a.applied_at && (
                   <p className="text-xs text-gray-400">
                     Applied on {new Date(a.applied_at).toLocaleDateString()}

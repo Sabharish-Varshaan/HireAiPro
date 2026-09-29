@@ -34,8 +34,8 @@ export function AssessmentRunner({
     queryFn: () => api.get(`/assessments/${assessmentId}/overview`).then((r) => r.data),
   });
   const existing = useQuery({
-    queryKey: ["attempt-by-app", applicationId],
-    queryFn: () => api.get(`/assessments/attempts/by-application/${applicationId}`).then((r) => r.data),
+    queryKey: ["attempt-by-app", applicationId, assessmentId],
+    queryFn: () => api.get(`/assessments/attempts/by-application/${applicationId}`, { params: { assessment_id: assessmentId } }).then((r) => r.data),
   });
   const attemptId: string | undefined = existing.data?.attempt?.id;
   const status: string | undefined = existing.data?.attempt?.status;
@@ -85,7 +85,7 @@ export function AssessmentRunner({
   const submit = useMutation({
     mutationFn: () => api.post(`/assessments/attempts/${attemptId}/submit`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["attempt-by-app", applicationId] });
+      qc.invalidateQueries({ queryKey: ["attempt-by-app", applicationId] });  // prefix: covers every stage of this application
       onSubmitted();
     },
   });

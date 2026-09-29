@@ -44,7 +44,7 @@ async def ensure_pipeline(db: AsyncSession, job: Job) -> list[HiringStage]:
     for i, t in enumerate(S.ALL_STAGES):
         d = S.DEFAULTS[t]
         st = HiringStage(job_id=job.id, stage_type=t, order_index=i, enabled=d["enabled"], required=True, duration_minutes=d["duration_minutes"],
-                         question_count=d["question_count"], proctored=True, status="DRAFT", config=default_config(t))
+                         question_count=None if t == S.TECH_INTERVIEW else d["question_count"], proctored=True, status="DRAFT", config=default_config(t))
         if t == S.TECHNICAL and legacy is not None:
             st.assessment_id = legacy.id
             st.status = "PUBLISHED" if legacy.status == "PUBLISHED" else "READY"
@@ -57,8 +57,8 @@ async def ensure_pipeline(db: AsyncSession, job: Job) -> list[HiringStage]:
 
 def default_config(stage_type: str) -> dict:
     if stage_type == S.APTITUDE:
-        n = len(S.APTITUDE_CATEGORIES)
-        return {"categories": {c: round(100 / n) for c in S.APTITUDE_CATEGORIES[:3]}, "difficulty": {"easy": 30, "medium": 50, "hard": 20},
+        first = S.APTITUDE_CATEGORIES[:3]  # quantitative, logical and analytical reasoning: an even split that adds up to exactly 100
+        return {"categories": {c: (34 if i == 0 else 33) for i, c in enumerate(first)}, "difficulty": {"easy": 30, "medium": 50, "hard": 20},
                 "shuffle_questions": True, "shuffle_options": True}
     if stage_type == S.TECHNICAL:
         return {"mcq_share": 40, "difficulty": {"easy": 30, "medium": 50, "hard": 20}, "shuffle_questions": True, "shuffle_options": True}
