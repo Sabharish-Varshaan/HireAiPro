@@ -12,6 +12,7 @@ It never scores answers into skill levels: answer scoring is the rubric
 service → evidence service → SkillEstimator path in the API layer.
 """
 
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -216,13 +217,34 @@ class _Q(BaseModel):
 
 
 async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool = True) -> InterviewTurn | None:
+    """Deterministic competency/difficulty selection, then the next question from the prepared pool (a DB lookup).
+    Only when the pool cannot serve does the slower live path (agent, then single call) run. Stage times are stored."""
+    from app.services.interviews.pool import select_from_pool
+
+    t0 = time.perf_counter()
     job = await db.get(Job, interview.job_id)
     log = ToolLog()
     deps = InterviewDeps(db=db, interview=interview, job=job, log=log)
     count = len((await db.scalars(select(InterviewTurn.id).where(InterviewTurn.interview_id == interview.id))).all())
     ranked = await rank_candidates(db, job.id, interview.student_id, interview.id)
+    rank_ms = (time.perf_counter() - t0) * 1000
     if not ranked or count >= interview.max_turns:
         return None
+
+    t1 = time.perf_counter()
+    picked = await select_from_pool(db, interview, ranked, SELECTION_WINDOW)
+    if picked is not None:
+        pq, cand = picked
+        turn = InterviewTurn(
+            interview_id=interview.id, turn_index=count, target_skill_id=cand.skill_id, question_text=pq.question_text,
+            difficulty=pq.difficulty, reason_for_question=f"{pq.reason or 'prepared question'} [{cand.reason}]",
+            transcript_meta={"source_refs": pq.source_refs} if pq.source_refs else None, pool_question_id=pq.id,
+            timing={"path": "pool", "pool_source": pq.source, "rank_ms": round(rank_ms, 1),
+                    "select_ms": round((time.perf_counter() - t1) * 1000, 1), "total_ms": round((time.perf_counter() - t0) * 1000, 1)})
+        db.add(turn)
+        await db.flush()
+        return turn
+    pool_miss_ms = (time.perf_counter() - t1) * 1000
 
     async def llm() -> InterviewTurn:
         await run_llm_agent(interview_agent, "interview_agent", f"Choose the next question for the '{job.title}' interview.", deps, log)
@@ -250,6 +272,9 @@ async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool
         context_id=interview.id, tool_log=log, run_llm=llm if use_llm else _disabled, fallback=fallback,
         required_tools={"rank_competencies", "save_interview_turn"},
     )
+    if turn is not None:
+        turn.timing = {"path": "live_fallback", "rank_ms": round(rank_ms, 1), "pool_miss_ms": round(pool_miss_ms, 1),
+                       "total_ms": round((time.perf_counter() - t0) * 1000, 1)}
     return turn
 
 
@@ -270,6 +295,6 @@ async def evaluate_turn_answer(turn: InterviewTurn) -> RubricEvaluation:
         "version": "interview_rubric_v1",
     }
     return await get_ai_gateway().evaluate_rubric(
-        turn.student_answer_text or "", rubric, RubricEvaluation,
+        turn.student_answer_text or "", rubric, RubricEvaluation, task_type="interview_rubric_evaluation",
         related_entity_type="interview_turn", related_entity_id=turn.id,
     )

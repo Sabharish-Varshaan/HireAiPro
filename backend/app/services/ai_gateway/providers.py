@@ -63,6 +63,8 @@ TASK_POLICY: dict[str, list[str]] = {
     "rag_answer": CHEAP,
     "analytics_summary": CHEAP,
     "rubric_evaluation": CHEAP,
+    # candidate is waiting on this call between interview turns: Groq first (measured p50 1.1 s vs 3.9 s for luna), luna fallback
+    "interview_rubric_evaluation": AGENT,
     "career_summary": CHEAP,
     "interview_question": CHEAP,
     "metadata_extraction": CHEAP,

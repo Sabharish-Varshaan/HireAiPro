@@ -13,7 +13,7 @@ from app.models.coding import CodingSubmission, CodingTestResult
 from app.models.documents import Document
 from app.models.evidence import SkillEvidence, StudentSkill
 from app.models.institutions import Cohort, Department, Institution, InstitutionMember
-from app.models.interviews import Interview, InterviewTurn
+from app.models.interviews import Interview, InterviewPoolQuestion, InterviewTemplate, InterviewTurn
 from app.models.jobs import Job, JobSkill
 from app.models.knowledge import KnowledgeChunk, KnowledgeSource
 from app.models.matching import Match

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { Button, ErrorBox, Loading, apiError } from "../../components/ui";
 import { useSpokenQuestion } from "./useSpokenQuestion";
@@ -50,7 +50,11 @@ export function InterviewRunner({ interviewId, mediaStream, onCompleted }: {
   });
   const answerTurn = useMutation({
     mutationFn: (turnId: string) => api.post(`/interviews/turns/${turnId}/answer`, { answer_text: answer, answer_source: source }),
-    onSuccess: () => { setAnswer(""); setSource("text"); setTranscript(null); qc.invalidateQueries({ queryKey: ["interview-turns", interviewId] }); },
+    onSuccess: async () => {
+      setAnswer(""); setSource("text"); setTranscript(null);
+      await qc.invalidateQueries({ queryKey: ["interview-turns", interviewId] });
+      nextTurn.mutate(); // the next question comes from the prepared pool: advance without another click
+    },
   });
   const transcribe = useMutation({
     mutationFn: async ({ turnId, blob }: { turnId: string; blob: Blob }) => {
@@ -66,6 +70,10 @@ export function InterviewRunner({ interviewId, mediaStream, onCompleted }: {
   });
 
   const list: any[] = turns.data ?? [];
+  const began = useRef(false);
+  useEffect(() => {  // question 1 is prepared before Start: show it as soon as the runner mounts
+    if (turns.data && turns.data.length === 0 && !began.current && !nextTurn.isPending) { began.current = true; nextTurn.mutate(); }
+  }, [turns.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const current = list[list.length - 1];
   const pending = current && !current.student_answer_text;
   const completedByAgent = nextTurn.isSuccess && nextTurn.data === null;
@@ -111,12 +119,17 @@ export function InterviewRunner({ interviewId, mediaStream, onCompleted }: {
           <textarea className="w-full border border-gray-300 rounded-md p-2 text-sm" rows={4} value={answer}
             onChange={(e) => setAnswer(e.target.value)} placeholder="Type your answer, or record it above…" />
           <Button onClick={() => { voice.cancel(); answerTurn.mutate(current.id); }} disabled={answerTurn.isPending || !answer.trim()}>
-            {answerTurn.isPending ? "Submitting…" : "Submit answer"}
+            {answerTurn.isPending ? "Answer received…" : "Submit answer"}
           </Button>
         </div>
       )}
 
-      {!pending && !completedByAgent && (
+      {(answerTurn.isPending || answerTurn.isSuccess && nextTurn.isPending) && (
+        <p className="text-sm text-gray-700" role="status" data-testid="interview-status">
+          {answerTurn.isPending ? "✓ Answer received. Evaluating your response…" : "Preparing your next question…"}</p>
+      )}
+      {list.length === 0 && nextTurn.isPending && <p className="text-sm text-gray-700" role="status">Loading your first question…</p>}
+      {!pending && !completedByAgent && !nextTurn.isPending && !answerTurn.isPending && (
         <div className="flex gap-2">
           <Button onClick={() => nextTurn.mutate()} disabled={nextTurn.isPending}>
             {nextTurn.isPending ? "Interviewer is choosing the next question…" : list.length ? "Next question" : "Begin interview"}

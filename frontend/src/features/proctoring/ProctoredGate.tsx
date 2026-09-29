@@ -13,8 +13,10 @@ const CHECK_LABEL: Record<string, string> = {
  * Consent → system check → fullscreen start → monitored children.
  * `children` receives `complete` so the runner can end the session on submit.
  */
-export function ProctoredGate({ applicationId, kind, children }: {
+export function ProctoredGate({ applicationId, kind, preparing, children }: {
   applicationId: string; kind: "ASSESSMENT" | "INTERVIEW";
+  /** Extra setup work that must finish before Start (e.g. preparing the interview questions). */
+  preparing?: { ready: boolean; label: string };
   children: (complete: () => Promise<void>, stream: MediaStream | null) => ReactNode;
 }) {
   const p = useProctoring(applicationId, kind);
@@ -63,8 +65,13 @@ export function ProctoredGate({ applicationId, kind, children }: {
           setChecking(true);
           try { const r = await p.runSystemCheck(video.current); setMissing(r?.missing ?? []); } finally { setChecking(false); }
         }}>{checking ? "Checking… (speak now)" : p.checks ? "Run check again" : "Run system check"}</Button>
-        {p.phase === "ready" && <Button onClick={() => p.start()}>Enter fullscreen and start {label}</Button>}
+        {p.phase === "ready" && <Button onClick={() => p.start()} disabled={preparing ? !preparing.ready : false}>Enter fullscreen and start {label}</Button>}
       </div>
+      {preparing && (
+        <p className="text-xs" data-testid="preparing">{preparing.ready
+          ? <span className="text-green-700">✓ {preparing.label}: ready. Your first question will appear immediately.</span>
+          : <span className="text-amber-700">{preparing.label}…</span>}</p>
+      )}
     </div>
   );
 

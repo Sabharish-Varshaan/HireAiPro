@@ -39,3 +39,12 @@ def generate_assessment_task(self, job_id: str, title: str, actor_user_id: str |
         f"assessment:{job_id}", "assessment_generation", {"job_id": job_id, "title": title}, self.request.id,
         lambda: generate_assessment(uuid.UUID(job_id), title, uuid.UUID(actor_user_id) if actor_user_id else None),
     ))
+
+
+@celery_app.task(name="assessments.prepare_interview", bind=True, autoretry_for=TRANSIENT, retry_backoff=10, max_retries=2)
+def prepare_interview_template_task(self, job_id: str) -> dict:
+    """Authoring-time preparation of the interview template and question pool (docs/INTERVIEW_LATENCY.md)."""
+    from app.services.interviews.pool import fill_pool
+
+    return run_async(lambda: run_tracked(f"interview_template:{job_id}", "interview_template", {"job_id": job_id}, self.request.id,
+                                         lambda: fill_pool(uuid.UUID(job_id))))

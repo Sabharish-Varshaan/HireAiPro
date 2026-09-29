@@ -117,7 +117,18 @@ async def publish_assessment(assessment_id: uuid.UUID, user: User = Depends(requ
                 metadata={"questions": n})
     await db.commit()
     await db.refresh(assessment)
+    await _prepare_interview(db, job)
     return assessment
+
+
+async def _prepare_interview(db: AsyncSession, job: Job) -> None:
+    """Publishing also prepares the interview template and question pool in the background."""
+    from app.api.v1.interviews import _kick_prepare
+    from app.services.interviews.pool import upsert_template
+
+    await upsert_template(db, job)
+    await db.commit()
+    _kick_prepare(job.id)
 
 
 @router.get("/by-job/{job_id}", response_model=AssessmentOut | None)

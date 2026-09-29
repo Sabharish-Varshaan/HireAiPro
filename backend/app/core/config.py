@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     WHISPER_COMPUTE_TYPE: str = "int8"
     MAX_AUDIO_BYTES: int = 15 * 1024 * 1024
     INTERVIEW_MAX_TURNS: int = 5
+    # Answer scoring is awaited at most this long before the next question is served; a slower score finishes in the background
+    # and informs later turns (docs/INTERVIEW_LATENCY.md).
+    INTERVIEW_EVAL_BUDGET_SECONDS: float = 2.5
+    INTERVIEW_EVAL_CATCHUP_SECONDS: float = 1.0
 
     JUDGE0_URL: str = "http://localhost:2358"
     JUDGE0_POLL_TIMEOUT_SECONDS: int = 30

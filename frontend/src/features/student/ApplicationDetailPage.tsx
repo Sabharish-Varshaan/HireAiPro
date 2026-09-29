@@ -1,10 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { Badge, Button, Card, Empty, ErrorBox, Loading } from "../../components/ui";
 import { AssessmentRunner } from "../assessments/AssessmentRunner";
 import { InterviewRunner } from "../interviews/InterviewRunner";
 import { ProctoredGate } from "../proctoring/ProctoredGate";
+
+/** The interview record is created the moment the proctored session becomes active; no extra click. */
+function AutoStart({ onStart, pending }: { onStart: () => void; pending: boolean }) {
+  const fired = useRef(false);
+  useEffect(() => { if (!fired.current) { fired.current = true; onStart(); } }, [onStart]);
+  return <p className="text-sm text-gray-600">{pending ? "Starting your interview…" : "Starting…"}</p>;
+}
 
 export default function ApplicationDetailPage() {
   const { applicationId } = useParams();
@@ -20,6 +28,11 @@ export default function ApplicationDetailPage() {
     queryFn: () => api.get(`/assessments/attempts/by-application/${applicationId}`).then((r) => r.data) });
   const assessmentDone = ["SUBMITTED", "SCORED"].includes(attemptQ.data?.attempt?.status);
   const interviewDone = interview.data?.status === "COMPLETED";
+  const prepare = useQuery({ queryKey: ["interview-prepare", applicationId], enabled: !!a && (["ASSESSMENT_COMPLETED", "INTERVIEW_PENDING"].includes(a.status)) && !interview.data,
+    staleTime: Infinity, queryFn: () => api.post("/interviews/prepare", { application_id: applicationId }).then((r) => r.data) });
+  const readiness = useQuery({ queryKey: ["interview-readiness", applicationId], enabled: prepare.isSuccess && !prepare.data?.ready, refetchInterval: 2000,
+    queryFn: () => api.get(`/interviews/readiness/${applicationId}`).then((r) => r.data) });
+  const poolReady = !!(prepare.data?.ready || readiness.data?.ready);
   const refreshAll = () => ["application", "history", "interview", "match", "attempt-by-app"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const startInterview = useMutation({ mutationFn: () => api.post("/interviews/start", { application_id: applicationId }), onSuccess: refreshAll });
 
@@ -55,9 +68,10 @@ export default function ApplicationDetailPage() {
       <Card title="Interview" actions={interview.data ? <Badge>{interview.data.status}</Badge> : null}>
         {!interviewAllowed && <Empty>Available after you submit the assessment.</Empty>}
         {interviewAllowed && (interviewDone ? <p className="text-sm font-medium">Interview completed</p> : (
-          <ProctoredGate applicationId={applicationId!} kind="INTERVIEW">
+          <ProctoredGate applicationId={applicationId!} kind="INTERVIEW"
+            preparing={interview.data ? undefined : { ready: poolReady, label: "Preparing your interview questions" }}>
             {(complete, stream) => !interview.data ? (
-              <Button onClick={() => startInterview.mutate()} disabled={startInterview.isPending}>Start interview</Button>
+              <AutoStart onStart={() => startInterview.mutate()} pending={startInterview.isPending} />
             ) : <InterviewRunner interviewId={interview.data.id} mediaStream={stream} onCompleted={() => void complete()} />}
           </ProctoredGate>
         ))}
