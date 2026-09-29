@@ -32,3 +32,15 @@ Student and Placement Officer views cannot show any of it today: `JobOut` return
 1. Job posting model + validation (backend), Create job wizard and Posting card (frontend), student job card/detail, officer opportunity view, filters.
 2. Company-private question import: template (xlsx/csv/json), batches, preview with skill mapping and duplicate detection, confirm, browse/reuse from the assessment step, coverage table, priority company → platform → AI.
 3. Isolation tests, browser E2E across Company A/B, Placement Officer and Student.
+
+## Resolution (after this pass)
+| Finding | Status |
+|---|---|
+| 1, 3 Job posting / details card | Done: sectioned conditional form and Posting card (`docs/JOB_POSTING.md`) |
+| 2 Jobs list summary | Done: type, location, compensation, deadline on each row |
+| 8, 9, 10 Question bank | Done: job-scoped private bank, template, preview, confirm, Browse/attach, coverage (`docs/QUESTION_IMPORT.md`) |
+| 4 Raw decimals in requirements | Not changed |
+| 5, 7 Blocking reason / publish confirmation | Not changed |
+| 6 Institution dropdown lists every institution | Not changed |
+| 12 Sidebar not collapsible | Not changed here; a separate frontend design pass touched AppShell |
+| Extra: `GET /jobs/{id}` cross-company leak | Found in the browser test and fixed |
