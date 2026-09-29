@@ -19,6 +19,10 @@ class FakeGW:
 
     async def generate_structured(self, prompt, schema, **kw):
         self.calls += 1
+        if schema is P._PoolBatch:  # one call per competency: two questions for every depth layer asked for
+            layers = [int(x.split()[1].rstrip(":")) for x in prompt.splitlines() if x.strip().startswith("layer ")]
+            return P._PoolBatch(questions=[P._PQ(layer=layer, question_text=f"Prepared question {self.calls}-{layer}-{i}: explain the trade-offs involved here in detail.",
+                                                 reason_for_question="tests a core competency") for layer in layers for i in (1, 2)])
         return schema(question_text=f"Prepared question number {self.calls}: explain the trade-offs involved here in detail.",
                       reason_for_question="tests a core competency")
 
@@ -47,11 +51,17 @@ async def ctx(monkeypatch):
 @pytest.mark.asyncio
 async def test_pool_prefers_bank_generates_the_rest_and_is_idempotent(ctx):
     r = await P.fill_pool(ctx["job"])
-    assert r["status"] == "READY" and r["from_bank"] == 1 and r["generated"] == 3 * 3 - 1  # 3 skills x 3 difficulties
+    assert r["status"] == "READY" and r["from_bank"] == 1 and r["competencies"] == 3 and r["covered"] == 3
+    assert ctx["gw"].calls == 3  # ONE batch call per competency, not one per slot
     async with AsyncSessionLocal() as db:
         rows = (await db.scalars(select(InterviewPoolQuestion))).all()
         mine = [x for x in rows if x.template_id == (await db.scalar(select(InterviewTemplate.id).where(InterviewTemplate.job_id == ctx["job"])))]
-        assert len({(x.skill_id, x.difficulty) for x in mine}) == 9
+        per_skill = {}
+        for x in mine:
+            per_skill.setdefault(x.skill_id, []).append(x)
+        assert len(per_skill) == 3 and all(len(v) >= 8 for v in per_skill.values())  # enough depth to drill, not just 3 slots
+        assert all({x.layer for x in v} == {1, 2, 3, 4, 5} for v in per_skill.values())
+        assert all({x.kind for x in v} >= {"conceptual", "scenario", "debugging", "tradeoff"} for v in per_skill.values())
         assert len({x.content_hash for x in mine}) == len(mine)
         assert [x.source for x in mine].count("question_bank") == 1
     calls = ctx["gw"].calls
@@ -72,13 +82,14 @@ async def test_candidate_path_uses_pool_without_any_model_call(client, ctx, monk
     r = await client.post(f"/interviews/{iv['id']}/next-turn", headers=ctx["hs"])
     ms = (time.perf_counter() - t) * 1000
     assert r.status_code == 200 and r.json()["question_text"].startswith(("Prepared question", "Explain how CPython"))
+    assert r.json()["skill_name"]  # the competency label, nothing else about the plan
     assert ms < 1500  # DB lookup, not a model call (baseline was p50 16.9 s)
     async with AsyncSessionLocal() as db:
         turn = await db.scalar(select(InterviewTurn).where(InterviewTurn.interview_id == iv["id"]))
         assert turn.timing["path"] == "pool" and turn.pool_question_id and turn.timing["total_ms"] < 1500
         from app.models.interviews import Interview
         plan = (await db.get(Interview, iv["id"])).plan
-        assert plan["competencies"] and plan["pool"]["ready"]
+        assert plan["competencies"] and plan["pool"]["ready"] and plan["blueprint"] and plan["question_budget"] >= 6  # frozen blueprint copied to the session
     assert "timing" not in r.text and "pool" not in r.text.lower().replace("prepared", "")  # student view carries no internals
 
 
@@ -126,7 +137,7 @@ async def test_selection_follows_difficulty_never_repeats_and_falls_back_to_live
 async def test_readiness_prepare_and_recruiter_template_isolation(client, ctx, monkeypatch):
     from app.api.v1 import interviews as api
     kicked = []
-    monkeypatch.setattr(api, "_kick_prepare", lambda job_id: kicked.append(job_id))
+    monkeypatch.setattr(api, "_kick_prepare", lambda job_id, stage_type="TECHNICAL_INTERVIEW": kicked.append(job_id))
     r = await client.get(f"/interviews/readiness/{ctx['app']}", headers=ctx["hs"])
     assert r.json() == {"ready": False, "status": "MISSING"}
     prep = await client.post("/interviews/prepare", headers=ctx["hs"], json={"application_id": ctx["app"]})
@@ -134,7 +145,7 @@ async def test_readiness_prepare_and_recruiter_template_isolation(client, ctx, m
     await P.fill_pool(ctx["job"])
     assert (await client.get(f"/interviews/readiness/{ctx['app']}", headers=ctx["hs"])).json()["ready"] is True
     view = await client.get(f"/interviews/templates/by-job/{ctx['job']}", headers=ctx["hc"])
-    assert view.status_code == 200 and view.json()["status"] == "READY" and len(view.json()["questions"]) == 9
+    assert view.status_code == 200 and view.json()["status"] == "READY" and len(view.json()["questions"]) >= 24 and view.json()["config"]["blueprint"]
     assert view.json()["config"]["rubric"]["version"] == "interview_rubric_v1"
     assert (await client.get(f"/interviews/templates/by-job/{ctx['job']}", headers=ctx["hb"])).status_code in (403, 404)  # other company
     assert (await client.get(f"/interviews/templates/by-job/{ctx['job']}", headers=ctx["hs"])).status_code == 403  # student

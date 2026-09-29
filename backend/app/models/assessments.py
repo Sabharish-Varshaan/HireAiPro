@@ -22,6 +22,8 @@ class Assessment(Base, UUIDPk, TimestampMixin):
     plan: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Recruiter-set delivery options: {duration_minutes, randomize_questions, randomize_options}
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Set for pipeline stage assessments (APTITUDE_ASSESSMENT | TECHNICAL_ASSESSMENT | CODING_ASSESSMENT); NULL for the legacy single assessment.
+    stage_type: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class AssessmentSection(Base, UUIDPk, TimestampMixin):

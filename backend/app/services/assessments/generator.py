@@ -9,7 +9,7 @@ place), and every generated question carries a `generation_key` of
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessments import Assessment, AssessmentQuestion, AssessmentSection
@@ -75,6 +75,7 @@ async def search_company_questions(
         select(Question)
         .where(
             Question.skill_id == skill_id,
+            Question.domain.in_(("TECHNICAL", "CODING")),  # never interview or aptitude content
             Question.question_type == qtype,
             Question.organization_id == organization_id,
             Question.visibility == Visibility.COMPANY_PRIVATE,
@@ -120,6 +121,7 @@ async def search_platform_questions(
         select(Question)
         .where(
             Question.skill_id == skill_id,
+            Question.domain.in_(("TECHNICAL", "CODING")),
             Question.question_type == qtype,
             Question.visibility == Visibility.PLATFORM_PUBLIC,
             Question.status.in_([s.value for s in USABLE_PLATFORM]),
@@ -263,7 +265,8 @@ async def generate_missing_question(
 async def get_or_create_assessment(db: AsyncSession, job_id: uuid.UUID, title: str, bp: Blueprint) -> Assessment:
     """One assessment per job. Regenerating an unpublished assessment clears
     its sections and rebuilds; a published one is never rebuilt."""
-    assessment = await db.scalar(select(Assessment).where(Assessment.job_id == job_id).order_by(Assessment.created_at))
+    assessment = await db.scalar(select(Assessment).where(Assessment.job_id == job_id, or_(Assessment.stage_type.is_(None), Assessment.stage_type == "TECHNICAL_ASSESSMENT"))
+                                 .order_by(Assessment.created_at))
     blueprint_json = {
         "allocations": [
             {"skill_id": str(a.skill_id), "skill_name": a.skill_name, "weight": round(a.weight, 4),

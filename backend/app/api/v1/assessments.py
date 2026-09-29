@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_roles
@@ -34,6 +34,8 @@ from app.schemas.student_views import StudentAnswerView, StudentAttemptView, cod
 from app.schemas.questions import QuestionOut, QuestionStudentOut
 from app.schemas.rubric import RubricEvaluation
 from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
+from app.services.pipeline import service as pl
+from app.services.pipeline import stages as pl_stages
 from app.services.applications.service import transition_application
 from app.services.assessments import versioning as ver
 from app.services.audit import audit
@@ -116,8 +118,21 @@ async def publish_assessment(assessment_id: uuid.UUID, user: User = Depends(requ
     if missing:
         raise HTTPException(409, {"code": "POSTING_INCOMPLETE", "missing": missing,
                                   "message": "Complete the posting details (employment type, work mode, location) before publishing."})
+    if assessment.stage_type not in (None, pl_stages.TECHNICAL):
+        raise HTTPException(409, {"code": "USE_PIPELINE_PUBLISH", "message": "This assessment is a stage of the hiring process: publish the hiring process instead."})
+    pipeline = await pl.ensure_pipeline(db, job)
+    others = [s for s in pipeline if s.enabled and s.stage_type not in (pl_stages.TECHNICAL, pl_stages.TECH_INTERVIEW)]
+    if others:
+        raise HTTPException(409, {"code": "USE_PIPELINE_PUBLISH", "message": "This job has more stages enabled: publish the hiring process instead."})
     await ver.ensure_version(db, assessment, user.id)  # freeze content, answer keys and hidden tests
     assessment.status = "PUBLISHED"
+    tech_stage = next((s for s in pipeline if s.stage_type == pl_stages.TECHNICAL), None)
+    if tech_stage is not None:
+        tech_stage.assessment_id, tech_stage.status = assessment.id, "PUBLISHED"
+        assessment.stage_type = pl_stages.TECHNICAL
+    ti = next((s for s in pipeline if s.stage_type == pl_stages.TECH_INTERVIEW), None)
+    if ti is not None:
+        ti.status = "PUBLISHED"
     job.status = JobStatus.PUBLISHED
     if job.distribution_type == "INSTITUTION" and job.institution_approval in ("NOT_REQUIRED", "REJECTED"):
         job.institution_approval = "PENDING"  # goes to the placement officer's queue; students cannot see it yet
@@ -136,12 +151,18 @@ async def _prepare_interview(db: AsyncSession, job: Job) -> None:
 
     await upsert_template(db, job)
     await db.commit()
-    _kick_prepare(job.id)
+    _kick_prepare(job.id, pl_stages.TECH_INTERVIEW)
 
 
 @router.get("/by-job/{job_id}", response_model=AssessmentOut | None)
-async def get_assessment_for_job(job_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    a = await db.scalar(select(Assessment).where(Assessment.job_id == job_id).order_by(Assessment.created_at))
+async def get_assessment_for_job(job_id: uuid.UUID, stage_type: str | None = None, user: User = Depends(get_current_user),
+                                 db: AsyncSession = Depends(get_db)):
+    q = select(Assessment).where(Assessment.job_id == job_id)
+    if stage_type:
+        q = q.where(Assessment.stage_type == stage_type)
+    else:  # the un-staged call means the classic single assessment (legacy or the technical stage)
+        q = q.where(or_(Assessment.stage_type.is_(None), Assessment.stage_type == "TECHNICAL_ASSESSMENT"))
+    a = await db.scalar(q.order_by(Assessment.created_at))
     if a is None:
         return None
     try:
@@ -198,6 +219,11 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
             session.assessment_attempt_id = existing.id
             await db.commit()
         return _student_attempt(existing)
+    stage = await pl.stage_for_assessment(db, assessment)
+    try:
+        await pl.require_stage_open(db, application, stage)  # server-side: a LOCKED or finished stage cannot be entered
+    except pl.StageLocked as exc:
+        raise HTTPException(409, {"code": "STAGE_LOCKED", "message": str(exc)}) from exc
     version = await ver.ensure_version(db, assessment)
     cfg = version.config
     qorder, oorder = ver.new_layout(ver._from_content(version.content), cfg)
@@ -207,11 +233,11 @@ async def start_attempt(assessment_id: uuid.UUID, payload: StartAttemptRequest,
                                 expires_at=started + dt.timedelta(minutes=version.duration_minutes),
                                 question_order=qorder, option_orders=oorder)
     db.add(attempt)
-    if ApplicationStatus(application.status) == ApplicationStatus.APPLIED:
-        await transition_application(db, application, ApplicationStatus.ASSESSMENT_PENDING, user.id, "assessment started")
     await db.flush()
+    await pl.mark_started(db, application, stage, user.id, {"type": "assessment_attempt", "id": str(attempt.id)})
     if session is not None:
         session.assessment_attempt_id = attempt.id
+        session.hiring_stage_id = stage.id
     await db.commit()
     await db.refresh(attempt)
     return _student_attempt(attempt)
@@ -350,9 +376,10 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
             correct = answer.selected_option_index is not None and answer.selected_option_index == question.correct_option_index
             answer.is_correct = correct
             answer.score = aq.points if correct else 0.0
-            await record_evidence(db, attempt.student_id, question.skill_id, EvidenceSourceType.MCQ, 1.0 if correct else 0.0,
-                                  source_id=answer.id, difficulty=question.difficulty, confidence=0.6, raw_score=answer.score,
-                                  rubric_version="mcq_exact_match")
+            if question.skill_id is not None:  # aptitude questions have no technical skill: no skill evidence, the attempt score is the result
+                await record_evidence(db, attempt.student_id, question.skill_id, EvidenceSourceType.MCQ, 1.0 if correct else 0.0,
+                                      source_id=answer.id, difficulty=question.difficulty, confidence=0.6, raw_score=answer.score,
+                                      rubric_version="mcq_exact_match")
         elif qtype == QuestionType.TECHNICAL:
             if (answer.answer_text or "").strip():
                 ev = tech_evals[answer.id]  # scored concurrently above
@@ -393,19 +420,23 @@ async def _finalize(db: AsyncSession, attempt: AssessmentAttempt, user: User) ->
     attempt.submitted_at = ver.now()
     application = await db.get(Application, attempt.application_id)
     job = await db.get(Job, application.job_id)
-    if ApplicationStatus(application.status) == ApplicationStatus.ASSESSMENT_PENDING:
-        await transition_application(db, application, ApplicationStatus.ASSESSMENT_COMPLETED, user.id, "assessment submitted")
+    stage = await pl.stage_for_assessment(db, await db.get(Assessment, attempt.assessment_id))
+    match_due = await pl.complete_stage(db, application, stage, user.id, {"type": "assessment_attempt", "id": str(attempt.id)}) if stage else False
     await audit(db, user, "assessment_submitted", "assessment_attempt", attempt.id, organization_id=job.organization_id,
                 metadata={"total_score": round(attempt.total_score, 4)})
     await db.commit()
     await recalculate_all_skills_for_student(db, attempt.student_id, user.id, "assessment_submitted")
+    if match_due:  # an assessments-only pipeline ends here; the match is computed from the committed evidence
+        from app.services.matching.engine import compute_match_for_application
+
+        await compute_match_for_application(db, application.id)
     await db.refresh(attempt)
     return _student_attempt(attempt)
 
 
 @router.get("/attempts/by-application/{application_id}")
-async def attempt_for_application(application_id: uuid.UUID, user: User = Depends(get_current_user),
-                                  db: AsyncSession = Depends(get_db)):
+async def attempt_for_application(application_id: uuid.UUID, assessment_id: uuid.UUID | None = None,
+                                  user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Student: their own attempt (to resume after refresh; no answer keys).
     Recruiter of the job's company: scored answers incl. rubric evaluations."""
     from app.api.tenancy import assert_can_view_application
@@ -416,7 +447,10 @@ async def attempt_for_application(application_id: uuid.UUID, user: User = Depend
         raise HTTPException(404, "Application not found")
     await assert_can_view_application(db, user, application)  # own / company's own job / enrolled institution
     student = is_student(user)
-    attempt = await db.scalar(select(AssessmentAttempt).where(AssessmentAttempt.application_id == application_id))
+    aq = select(AssessmentAttempt).where(AssessmentAttempt.application_id == application_id)
+    if assessment_id is not None:  # a pipeline application has one attempt per assessment stage
+        aq = aq.where(AssessmentAttempt.assessment_id == assessment_id)
+    attempt = await db.scalar(aq.order_by(AssessmentAttempt.created_at))
     if attempt is None:
         return None
     if student and attempt.status == AssessmentAttemptStatus.IN_PROGRESS and ver.expired(attempt):
@@ -481,11 +515,15 @@ async def _attach(db: AsyncSession, user: User, assessment: Assessment, job: Job
         raise HTTPException(409, "Already in this assessment")
     from app.models.skills import Skill
 
-    skill = await db.get(Skill, q.skill_id)
-    sec = await db.scalar(select(AssessmentSection).where(AssessmentSection.assessment_id == assessment_id, AssessmentSection.title == skill.canonical_name))
+    problem = pl_stages.question_domain_problem(assessment.stage_type, q)
+    if problem:
+        raise HTTPException(409, problem)
+    skill = await db.get(Skill, q.skill_id) if q.skill_id else None
+    sec_title = skill.canonical_name if skill else (q.category or "General")
+    sec = await db.scalar(select(AssessmentSection).where(AssessmentSection.assessment_id == assessment_id, AssessmentSection.title == sec_title))
     if sec is None:
         n = len((await db.scalars(select(AssessmentSection.id).where(AssessmentSection.assessment_id == assessment_id))).all())
-        sec = AssessmentSection(assessment_id=assessment_id, title=skill.canonical_name, order_index=n)
+        sec = AssessmentSection(assessment_id=assessment_id, title=sec_title, order_index=n)
         db.add(sec)
         await db.flush()
     order = len((await db.scalars(select(AssessmentQuestion.id).where(AssessmentQuestion.assessment_id == assessment_id))).all())

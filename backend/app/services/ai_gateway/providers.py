@@ -67,6 +67,11 @@ TASK_POLICY: dict[str, list[str]] = {
     "interview_rubric_evaluation": AGENT,
     "career_summary": CHEAP,
     "interview_question": CHEAP,
+    # authoring-time batches and the candidate-facing HR observation (a person waits on it between turns)
+    "interview_pool_batch": AGENT,
+    "hr_observation": AGENT,
+    "aptitude_generation": AGENT,
+    "aptitude_verification": AGENT,
     "metadata_extraction": CHEAP,
     "ambiguous_skill_resolution": CHEAP,
     "generic": CHEAP,

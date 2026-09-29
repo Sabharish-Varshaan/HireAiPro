@@ -61,6 +61,7 @@ class AssessmentDeps:
     blueprint: Blueprint | None = None
     work: list[SkillWork] = field(default_factory=list)
     assessment: Assessment | None = None
+    difficulty: str = "medium"  # difficulty requested for newly generated questions (pipeline stages set this)
 
 
 INSTRUCTIONS = """You assemble a hiring assessment from confirmed job competencies.
@@ -200,7 +201,7 @@ async def _generate_for(d: AssessmentDeps, skill_index: int) -> dict:
             for attempt in range(per_slot):
                 q = await gen.generate_missing_question(
                     d.db, job_id=d.job.id, organization_id=d.job.organization_id, skill_id=w.alloc.skill_id,
-                    skill_name=w.alloc.skill_name, qtype=qtype, difficulty="medium",
+                    skill_name=w.alloc.skill_name, qtype=qtype, difficulty=getattr(d, "difficulty", "medium"),
                     slot=slot_index * 100 + attempt, avoid=list(reasons), rejected_hashes=set(rejected_hashes),
                 )
                 w.generation_attempts += 1

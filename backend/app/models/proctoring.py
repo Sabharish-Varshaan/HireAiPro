@@ -17,6 +17,7 @@ class ProctoringSession(Base, UUIDPk, TimestampMixin):
     student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("student_profiles.id"), index=True)
     application_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("applications.id"), index=True)
     kind: Mapped[str] = mapped_column(String)  # ASSESSMENT | INTERVIEW
+    hiring_stage_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("hiring_stages.id"), nullable=True)  # label only
     assessment_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assessment_attempts.id"), nullable=True, index=True)
     interview_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("interviews.id"), nullable=True, index=True)

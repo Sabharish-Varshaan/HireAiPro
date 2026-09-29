@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.interview_agent import decide_next_turn, evaluate_turn_answer
+from app.agents.interview_agent import decide_next_turn, evaluate_hr_answer, evaluate_turn_answer
 from app.api.deps import get_current_user, require_roles
 from app.api.tenancy import assert_can_view_application, assert_can_view_student, get_student_profile
 from app.core.config import get_settings
@@ -20,12 +20,15 @@ from app.models.documents import Document
 from app.models.enums import ApplicationStatus, EvidenceSourceType, UserRole, Visibility
 from app.models.interviews import Interview, InterviewTurn
 from app.models.jobs import Job
+from app.models.pipeline import HiringStage
 from app.models.skills import Skill
 from app.models.users import User
 from app.schemas.student_views import StudentInterviewTurnView, is_student
 from app.schemas.interviews_api import InterviewOut, InterviewTurnOut, StartInterviewRequest
 from app.services.ai_gateway.gateway import AIGatewayError, get_ai_gateway
 from app.services.applications.service import transition_application
+from app.services.pipeline import service as pl
+from app.services.pipeline import stages as S
 from app.services.audit import audit
 from app.services.evidence.estimator import recalculate_all_skills_for_student
 from app.services.evidence.service import record_evidence
@@ -62,15 +65,17 @@ async def _own_turn(db, user, turn_id) -> tuple[InterviewTurn, Interview]:
 
 async def _student_turn(db, t: InterviewTurn) -> StudentInterviewTurnView:
     """No rubric values, difficulty or selection reason (which embeds confidence numbers)."""
-    skill = await db.get(Skill, t.target_skill_id)
-    return StudentInterviewTurnView(id=t.id, turn_index=t.turn_index, skill_name=skill.canonical_name if skill else None,
+    skill = await db.get(Skill, t.target_skill_id) if t.target_skill_id else None
+    topic = skill.canonical_name if skill else S.HR_CATEGORY_LABELS.get(t.category or "", None)
+    return StudentInterviewTurnView(id=t.id, turn_index=t.turn_index, skill_name=topic,
                                     question_text=t.question_text, student_answer_text=t.student_answer_text,
                                     answer_source=t.answer_source, answered=t.student_answer_text is not None)
 
 
 async def _turn_out(db, t: InterviewTurn) -> InterviewTurnOut:
-    skill = await db.get(Skill, t.target_skill_id)
-    return InterviewTurnOut.model_validate(t).model_copy(update={"skill_name": skill.canonical_name if skill else None})
+    skill = await db.get(Skill, t.target_skill_id) if t.target_skill_id else None
+    topic = skill.canonical_name if skill else S.HR_CATEGORY_LABELS.get(t.category or "", None)
+    return InterviewTurnOut.model_validate(t).model_copy(update={"skill_name": topic})
 
 
 @router.post("/start", response_model=InterviewOut)
@@ -80,32 +85,52 @@ async def start_interview(payload: StartInterviewRequest, user: User = Depends(r
     application = await db.get(Application, payload.application_id)
     if me is None or application is None or application.student_id != me.id:
         raise HTTPException(404, "Application not found")
+    if payload.stage_type not in S.INTERVIEW_STAGES:
+        raise HTTPException(422, "Unknown interview stage")
+    job = await db.get(Job, application.job_id)
+    await pl.ensure_pipeline(db, job)
+    stage = await pl.stage_by_type(db, application.job_id, payload.stage_type)
+    if stage is None or not stage.enabled:
+        raise HTTPException(404, f"{S.label(payload.stage_type)} is not part of this hiring process")
     from app.api.v1.proctoring import require_ready_session
 
     session = await require_ready_session(db, application.id, "INTERVIEW")
-    existing = await db.scalar(select(Interview).where(Interview.application_id == application.id))
+    existing = await db.scalar(select(Interview).where(Interview.application_id == application.id, Interview.stage_type == payload.stage_type))
     if existing:
         if session is not None and session.interview_id is None:
             session.interview_id = existing.id
+            session.hiring_stage_id = stage.id
             await db.commit()
         return existing
-    if ApplicationStatus(application.status) != ApplicationStatus.ASSESSMENT_COMPLETED:
-        raise HTTPException(409, "Finish the assessment before starting the interview")
-    from app.services.interviews.pool import pool_status
+    try:
+        await pl.require_stage_open(db, application, stage)  # server-side gate: earlier stages must be finished
+    except pl.StageLocked as exc:
+        raise HTTPException(409, {"code": "STAGE_LOCKED", "message": str(exc)}) from exc
+    from app.services.interviews.pool import pool_status, _template
     from app.services.interviews.selector import rank_candidates
 
-    interview = Interview(application_id=application.id, student_id=me.id, job_id=application.job_id,
-                          max_turns=settings.INTERVIEW_MAX_TURNS)
+    tpl = await _template(db, application.job_id, payload.stage_type)
+    budget = (tpl.config or {}).get("question_budget") if tpl else None
+    interview = Interview(application_id=application.id, student_id=me.id, job_id=application.job_id, stage_type=payload.stage_type,
+                          hiring_stage_id=stage.id, max_turns=budget or settings.INTERVIEW_MAX_TURNS)
     db.add(interview)
     await db.flush()
-    # Session plan: the ranked competencies for THIS candidate at start (same blueprint, same rubric for everyone).
-    ranked = await rank_candidates(db, application.job_id, me.id, interview.id)
-    pool = await pool_status(db, application.job_id)
-    interview.plan = {"competencies": [c.as_dict() for c in ranked[:settings.INTERVIEW_MAX_TURNS]], "pool": pool,
-                      "rubric_version": "interview_rubric_v1"}
+    pool = await pool_status(db, application.job_id, payload.stage_type)
+    if payload.stage_type == S.TECH_INTERVIEW:
+        # Session plan: the frozen blueprint (same competencies, ranges and rubric for every candidate of this job) plus this candidate's ranking.
+        ranked = await rank_candidates(db, application.job_id, me.id, interview.id)
+        interview.plan = {"stage_type": payload.stage_type, "blueprint": (tpl.config or {}).get("blueprint") if tpl else None,
+                          "template_version": tpl.version if tpl else None, "question_budget": budget,
+                          "competencies": [c.as_dict() for c in ranked[:settings.INTERVIEW_MAX_TURNS]], "pool": pool,
+                          "rubric_version": "interview_rubric_v1"}
+    else:
+        interview.plan = {"stage_type": payload.stage_type, "categories": (tpl.config or {}).get("categories") if tpl else None,
+                          "template_version": tpl.version if tpl else None, "question_budget": budget, "pool": pool,
+                          "rubric_version": "hr_observation_v1"}
     if session is not None:
         session.interview_id = interview.id
-    await transition_application(db, application, ApplicationStatus.INTERVIEW_PENDING, user.id, "interview started")
+        session.hiring_stage_id = stage.id
+    await pl.mark_started(db, application, stage, user.id, {"type": "interview", "id": str(interview.id)})
     await db.commit()
     await db.refresh(interview)
     return interview
@@ -119,11 +144,14 @@ async def _complete(db, interview: Interview, actor_id) -> None:
     interview.status = "COMPLETED"
     application = await db.get(Application, interview.application_id)
     job = await db.get(Job, interview.job_id)
-    await transition_application(db, application, ApplicationStatus.INTERVIEW_COMPLETED, actor_id, "interview completed")
-    await transition_application(db, application, ApplicationStatus.UNDER_REVIEW, None, "ready for recruiter review")
-    await audit(db, actor_id, "interview_completed", "interview", interview.id, organization_id=job.organization_id)
+    stage = (await db.get(HiringStage, interview.hiring_stage_id) if interview.hiring_stage_id
+             else await pl.stage_by_type(db, interview.job_id, interview.stage_type))
+    match_due = await pl.complete_stage(db, application, stage, actor_id, {"type": "interview", "id": str(interview.id)}) if stage else False
+    await audit(db, actor_id, "interview_completed", "interview", interview.id, organization_id=job.organization_id,
+                metadata={"stage_type": interview.stage_type})
     await db.commit()
-    await compute_match_for_application(db, application.id)
+    if match_due:  # the whole pipeline is finished: match from the committed evidence (HR observations are never evidence)
+        await compute_match_for_application(db, application.id)
 
 
 @router.post("/{interview_id}/next-turn", response_model=StudentInterviewTurnView | None)
@@ -198,6 +226,13 @@ async def _evaluate_and_record(turn_id: uuid.UUID, student_id: uuid.UUID, actor_
         if turn is None or turn.rubric_evaluation is not None or not turn.student_answer_text:
             return
         t_eval = time.perf_counter()
+        itv = await db.get(Interview, turn.interview_id)
+        if itv.stage_type == S.HR_INTERVIEW:
+            # HR: neutral observations only. No rubric score, no skill evidence, no skill recalculation, no effect on the match.
+            turn.rubric_evaluation = await evaluate_hr_answer(turn)
+            turn.timing = {**(turn.timing or {}), "answer": {"eval_ms": round((time.perf_counter() - t_eval) * 1000, 1)}}
+            await db.commit()
+            return
         ev = await evaluate_turn_answer(turn)  # AIGatewayError propagates; the answer itself is already saved
         eval_ms = (time.perf_counter() - t_eval) * 1000
         turn.rubric_evaluation = ev.model_dump()
@@ -287,13 +322,13 @@ async def list_turns(interview_id: uuid.UUID, user: User = Depends(get_current_u
 
 
 @router.get("/by-application/{application_id}", response_model=InterviewOut | None)
-async def interview_for_application(application_id: uuid.UUID, user: User = Depends(get_current_user),
-                                    db: AsyncSession = Depends(get_db)):
+async def interview_for_application(application_id: uuid.UUID, stage_type: str = S.TECH_INTERVIEW,
+                                    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     application = await db.get(Application, application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
     await assert_can_view_application(db, user, application)
-    return await db.scalar(select(Interview).where(Interview.application_id == application_id))
+    return await db.scalar(select(Interview).where(Interview.application_id == application_id, Interview.stage_type == stage_type))
 
 
 @router.get("/history/me", response_model=list[InterviewOut])
@@ -306,6 +341,7 @@ async def interview_history(user: User = Depends(require_roles(UserRole.STUDENT)
 
 class PrepareRequest(BaseModel):
     application_id: uuid.UUID
+    stage_type: str = S.TECH_INTERVIEW
 
 
 @router.post("/prepare")
@@ -318,62 +354,65 @@ async def prepare_interview(payload: PrepareRequest, user: User = Depends(requir
     application = await db.get(Application, payload.application_id)
     if me is None or application is None or application.student_id != me.id:
         raise HTTPException(404, "Application not found")
-    st = await pool_status(db, application.job_id)
+    st = await pool_status(db, application.job_id, payload.stage_type)
     if st["status"] in ("MISSING", "FAILED"):  # legacy job or earlier failure: build it now, in the background
         job = await db.get(Job, application.job_id)
-        await upsert_template(db, job, reset=st["status"] == "FAILED")
+        await upsert_template(db, job, payload.stage_type, reset=st["status"] == "FAILED")
         await db.commit()
-        _kick_prepare(application.job_id)
-        st = await pool_status(db, application.job_id)
+        _kick_prepare(application.job_id, payload.stage_type)
+        st = await pool_status(db, application.job_id, payload.stage_type)
     return st
 
 
 @router.get("/readiness/{application_id}")
-async def interview_readiness(application_id: uuid.UUID, user: User = Depends(require_roles(UserRole.STUDENT)), db: AsyncSession = Depends(get_db)):
+async def interview_readiness(application_id: uuid.UUID, stage_type: str = S.TECH_INTERVIEW, user: User = Depends(require_roles(UserRole.STUDENT)),
+                              db: AsyncSession = Depends(get_db)):
     from app.services.interviews.pool import pool_status
 
     me = await get_student_profile(db, user)
     application = await db.get(Application, application_id)
     if me is None or application is None or application.student_id != me.id:
         raise HTTPException(404, "Application not found")
-    st = await pool_status(db, application.job_id)
+    st = await pool_status(db, application.job_id, stage_type)
     return {"ready": st["ready"], "status": st["status"]}
 
 
-def _kick_prepare(job_id: uuid.UUID) -> None:
+def _kick_prepare(job_id: uuid.UUID, stage_type: str = S.TECH_INTERVIEW) -> None:
     try:
         from app.workers.tasks_questions import prepare_interview_template_task
 
-        prepare_interview_template_task.delay(str(job_id))
+        prepare_interview_template_task.delay(str(job_id), stage_type)
     except Exception:  # broker down: the live path still works, just slower
         logger.warning("could not enqueue interview pool preparation for %s", job_id, exc_info=True)
 
 
 @router.get("/templates/by-job/{job_id}")
-async def template_for_job(job_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES, UserRole.PLATFORM_ADMIN)),
-                           db: AsyncSession = Depends(get_db)):
+async def template_for_job(job_id: uuid.UUID, stage_type: str = S.TECH_INTERVIEW,
+                           user: User = Depends(require_roles(*RECRUITER_ROLES, UserRole.PLATFORM_ADMIN)), db: AsyncSession = Depends(get_db)):
     """The company reviews its interview configuration: competencies, rules, and the prepared questions per skill/difficulty."""
     from app.api.tenancy import get_job_for_member
     from app.models.interviews import InterviewPoolQuestion, InterviewTemplate
     from app.models.skills import Skill
 
     await get_job_for_member(db, user, job_id)
-    t = await db.scalar(select(InterviewTemplate).where(InterviewTemplate.job_id == job_id))
+    t = await db.scalar(select(InterviewTemplate).where(InterviewTemplate.job_id == job_id, InterviewTemplate.stage_type == stage_type))
     if t is None:
         return None
-    rows = (await db.execute(select(InterviewPoolQuestion, Skill.canonical_name).join(Skill, Skill.id == InterviewPoolQuestion.skill_id)
-                             .where(InterviewPoolQuestion.template_id == t.id).order_by(Skill.canonical_name, InterviewPoolQuestion.difficulty))).all()
-    return {"status": t.status, "version": t.version, "error": t.error, "config": t.config,
-            "questions": [{"id": q.id, "skill": n, "difficulty": q.difficulty, "question_text": q.question_text, "source": q.source} for q, n in rows]}
+    rows = (await db.execute(select(InterviewPoolQuestion, Skill.canonical_name).outerjoin(Skill, Skill.id == InterviewPoolQuestion.skill_id)
+                             .where(InterviewPoolQuestion.template_id == t.id).order_by(Skill.canonical_name, InterviewPoolQuestion.layer, InterviewPoolQuestion.difficulty))).all()
+    return {"status": t.status, "version": t.version, "error": t.error, "config": t.config, "stage_type": stage_type,
+            "questions": [{"id": q.id, "skill": n or S.HR_CATEGORY_LABELS.get(q.category or "", q.category), "difficulty": q.difficulty, "kind": q.kind,
+                           "layer": q.layer, "category": q.category, "question_text": q.question_text, "source": q.source} for q, n in rows]}
 
 
 @router.post("/templates/by-job/{job_id}/rebuild", status_code=202)
-async def rebuild_template(job_id: uuid.UUID, user: User = Depends(require_roles(*RECRUITER_ROLES)), db: AsyncSession = Depends(get_db)):
+async def rebuild_template(job_id: uuid.UUID, stage_type: str = S.TECH_INTERVIEW, user: User = Depends(require_roles(*RECRUITER_ROLES)),
+                           db: AsyncSession = Depends(get_db)):
     from app.api.tenancy import get_job_for_member
     from app.services.interviews.pool import upsert_template
 
     job = await get_job_for_member(db, user, job_id)
-    await upsert_template(db, job, reset=True)
+    await upsert_template(db, job, stage_type, reset=True)
     await db.commit()
-    _kick_prepare(job_id)
+    _kick_prepare(job_id, stage_type)
     return {"status": "PREPARING"}

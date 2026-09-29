@@ -34,11 +34,16 @@ def effective_config(assessment: Assessment) -> dict:
     return cfg
 
 
+def _val(v) -> str:
+    """Plain string for an enum member or a string (a question created in the same session still holds the enum)."""
+    return str(getattr(v, "value", v))
+
+
 def _q_json(q: Question) -> dict:
-    return {"id": str(q.id), "question_text": q.question_text, "question_type": str(q.question_type), "skill_id": str(q.skill_id),
+    return {"id": str(q.id), "question_text": q.question_text, "question_type": _val(q.question_type), "skill_id": str(q.skill_id) if q.skill_id else None, "domain": q.domain, "category": q.category,
             "difficulty": q.difficulty, "options": q.options, "correct_option_index": q.correct_option_index,
             "expected_concepts": q.expected_concepts, "rubric": q.rubric, "starter_code": q.starter_code,
-            "test_cases": q.test_cases, "allowed_languages": q.allowed_languages, "source_type": str(q.source_type)}
+            "test_cases": q.test_cases, "allowed_languages": q.allowed_languages, "source_type": _val(q.source_type)}
 
 
 async def ensure_version(db: AsyncSession, assessment: Assessment, published_by: uuid.UUID | None = None) -> AssessmentVersion:
@@ -73,7 +78,7 @@ class FrozenQ:
     id: uuid.UUID
     question_text: str
     question_type: str
-    skill_id: uuid.UUID
+    skill_id: uuid.UUID | None
     difficulty: str
     options: list | None
     correct_option_index: int | None
@@ -83,6 +88,8 @@ class FrozenQ:
     test_cases: list | None
     allowed_languages: list | None
     source_type: str
+    domain: str = "TECHNICAL"
+    category: str | None = None
 
 
 @dataclass
@@ -99,10 +106,10 @@ def _from_content(content: dict) -> Frozen:
             q = item["question"]
             fq = FrozenQ(aq_id=uuid.UUID(item["aq_id"]), section_id=uuid.UUID(sec["id"]), order_index=item["order_index"],
                          points=item["points"], id=uuid.UUID(q["id"]), question_text=q["question_text"], question_type=q["question_type"],
-                         skill_id=uuid.UUID(q["skill_id"]), difficulty=q["difficulty"], options=q["options"],
+                         skill_id=uuid.UUID(q["skill_id"]) if q.get("skill_id") else None, difficulty=q["difficulty"], options=q["options"],
                          correct_option_index=q["correct_option_index"], expected_concepts=q["expected_concepts"], rubric=q["rubric"],
                          starter_code=q["starter_code"], test_cases=q["test_cases"], allowed_languages=q["allowed_languages"],
-                         source_type=q["source_type"])
+                         source_type=q["source_type"], domain=q.get("domain") or "TECHNICAL", category=q.get("category"))
             fz.by_aq[fq.aq_id] = fq
             ids.append(fq.aq_id)
         fz.sections.append({"id": uuid.UUID(sec["id"]), "title": sec["title"], "order_index": sec["order_index"], "aq_ids": ids})
@@ -172,7 +179,7 @@ def student_question(attempt: AssessmentAttempt, q: FrozenQ) -> dict:
     perm = (attempt.option_orders or {}).get(str(q.aq_id))
     options = [q.options[i] for i in perm] if (perm and q.options) else q.options
     starter = None if q.source_type == QuestionSourceType.AI_GENERATED.value else q.starter_code
-    out = {"id": q.id, "question_text": q.question_text, "question_type": q.question_type, "skill_id": q.skill_id,
+    out = {"id": q.id, "question_text": q.question_text, "question_type": q.question_type, "skill_id": q.skill_id, "category": q.category,
            "difficulty": q.difficulty, "options": options, "starter_code": starter, "allowed_languages": q.allowed_languages}
     if q.question_type == "CODING" and q.test_cases:
         from app.services.coding import test_model as tm

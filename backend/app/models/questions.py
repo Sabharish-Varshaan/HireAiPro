@@ -1,7 +1,7 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Float, Integer, String, Text
+from sqlalchemy import event, DateTime, ForeignKey, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,9 +28,13 @@ class Question(Base, UUIDPk, TimestampMixin):
     )
     question_text: Mapped[str] = mapped_column(Text)
     question_type: Mapped[QuestionType] = mapped_column(String)
-    skill_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("skills.id"), index=True
+    # NULL only for aptitude and HR-interview questions, which are classified by `category` instead of a technical skill.
+    skill_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("skills.id"), index=True, nullable=True
     )
+    domain: Mapped[str] = mapped_column(String, default="TECHNICAL", server_default="TECHNICAL", index=True)  # APTITUDE | TECHNICAL | CODING | TECHNICAL_INTERVIEW | HR_INTERVIEW
+    category: Mapped[str | None] = mapped_column(String, nullable=True)  # e.g. Quantitative Aptitude, communication
+    sub_category: Mapped[str | None] = mapped_column(String, nullable=True)
     subskill_text: Mapped[str | None] = mapped_column(String, nullable=True)
     difficulty: Mapped[str] = mapped_column(String, default="medium")
 
@@ -65,6 +69,15 @@ class Question(Base, UUIDPk, TimestampMixin):
     provenance: Mapped[str | None] = mapped_column(String, nullable=True)
     import_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("question_import_batches.id"), nullable=True)
     import_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # external_question_id, explanation, tags, time_limit_seconds, required, max_score
+
+
+@event.listens_for(Question, "before_insert")
+def _default_domain(_mapper, _conn, target: Question) -> None:
+    """Coding problems live in the CODING domain unless a caller chose another one explicitly."""
+    if str(target.question_type or "").endswith("CODING") and target.domain in (None, "TECHNICAL"):
+        target.domain = "CODING"
+    elif target.domain is None:
+        target.domain = "TECHNICAL"
 
 
 class QuestionSkill(Base, UUIDPk, TimestampMixin):

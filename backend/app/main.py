@@ -24,6 +24,7 @@ from app.api.v1 import opportunities as opportunities_routes
 from app.api.v1 import question_imports as question_import_routes
 from app.api.v1 import institution_students as institution_students_routes
 from app.api.v1 import proctoring as proctoring_routes
+from app.api.v1 import hiring_pipeline as hiring_pipeline_routes
 
 app = FastAPI(title="HireAiPro API", version="0.1.0")
 
@@ -58,6 +59,7 @@ app.include_router(question_import_routes.router, prefix="/api/v1")
 app.include_router(opportunities_routes.router, prefix="/api/v1")
 app.include_router(institution_students_routes.router, prefix="/api/v1")
 app.include_router(proctoring_routes.router, prefix="/api/v1")
+app.include_router(hiring_pipeline_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

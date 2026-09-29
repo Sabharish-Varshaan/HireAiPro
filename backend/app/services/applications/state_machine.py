@@ -2,7 +2,7 @@ from app.models.enums import ApplicationStatus
 
 ALLOWED_TRANSITIONS: dict[ApplicationStatus, set[ApplicationStatus]] = {
     ApplicationStatus.DRAFT: {ApplicationStatus.APPLIED},
-    ApplicationStatus.APPLIED: {ApplicationStatus.ASSESSMENT_PENDING, ApplicationStatus.REJECTED},
+    ApplicationStatus.APPLIED: {ApplicationStatus.ASSESSMENT_PENDING, ApplicationStatus.INTERVIEW_PENDING, ApplicationStatus.REJECTED},  # INTERVIEW_PENDING: pipelines without assessment stages
     ApplicationStatus.ASSESSMENT_PENDING: {ApplicationStatus.ASSESSMENT_COMPLETED, ApplicationStatus.REJECTED},
     ApplicationStatus.ASSESSMENT_COMPLETED: {ApplicationStatus.INTERVIEW_PENDING, ApplicationStatus.REJECTED, ApplicationStatus.UNDER_REVIEW},
     ApplicationStatus.INTERVIEW_PENDING: {ApplicationStatus.INTERVIEW_COMPLETED, ApplicationStatus.REJECTED},

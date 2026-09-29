@@ -69,7 +69,13 @@ async def apply_to_job(payload: ApplicationCreate, user: User = Depends(require_
     await audit(db, user, "application_submitted", "application", application.id, organization_id=job.organization_id)
     await notify(db, user.id, "application_submitted", "Application submitted", body=job.title,
                  link=f"/student/applications/{application.id}", dedupe_key=f"app:{application.id}:APPLIED")
-    await notify(db, user.id, "assessment_assigned", "Assessment ready to take", body=job.title,
+    from app.services.pipeline import service as pl
+    from app.services.pipeline import stages as pl_stages
+
+    rows = await pl.ensure_progress(db, application)  # one progress row per enabled stage; the first one is available now
+    first = next((s for s, p in rows if p.status == "AVAILABLE"), None)
+    first_label = pl_stages.label(first.stage_type) if first else None
+    await notify(db, user.id, "assessment_assigned", f"{first_label} available" if first_label else "Assessment ready to take", body=job.title,
                  link=f"/student/applications/{application.id}", dedupe_key=f"app:{application.id}:assessment_assigned")
     await db.commit()
     return _student_view(await _enrich(db, application))

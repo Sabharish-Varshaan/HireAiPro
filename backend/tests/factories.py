@@ -85,3 +85,74 @@ async def make_institution(db: AsyncSession, name: str = "Uni") -> tuple[Institu
     db.add(InstitutionMember(institution_id=inst.id, user_id=u.id, role=UserRole.INSTITUTION_ADMIN))
     await db.flush()
     return inst, u, h
+
+
+async def configure_pipeline(db: AsyncSession, job: Job, enabled: list[str], durations: dict[str, int] | None = None):
+    """Sets which stages of the job's hiring process are enabled (in the given order); everything else is disabled."""
+    from app.services.pipeline import service as pl
+    from app.services.pipeline import stages as S
+
+    rows = {r.stage_type: r for r in await pl.ensure_pipeline(db, job)}
+    order = list(enabled) + [t for t in S.ALL_STAGES if t not in enabled]
+    for i, t in enumerate(order):
+        rows[t].order_index = i
+        rows[t].enabled = t in enabled
+        if durations and t in durations:
+            rows[t].duration_minutes = durations[t]
+    await db.flush()
+    return rows
+
+
+async def make_stage_assessment(db: AsyncSession, org: Organization, job: Job, stage_type: str, *, duration: int = 30,
+                                published: bool = True, n: int = 3, token: str = ""):
+    """A stage-linked assessment whose questions belong to the stage's own domain: aptitude MCQs (no skill), technical MCQ + written, or coding."""
+    from app.models.assessments import Assessment, AssessmentQuestion, AssessmentSection
+    from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, Visibility
+    from app.models.questions import Question
+    from app.services.assessments import versioning as ver
+    from app.services.pipeline import service as pl
+    from app.services.pipeline import stages as S
+
+    rows = {r.stage_type: r for r in await pl.ensure_pipeline(db, job)}
+    st = rows[stage_type]
+    st.enabled, st.duration_minutes = True, duration
+    py = await skill(db, "Python")
+    qs = []
+    if stage_type == S.APTITUDE:
+        for i in range(n):
+            qs.append(Question(question_text=f"{token} Aptitude question {i}: what is {i + 2} multiplied by 6?", question_type=QuestionType.MCQ, skill_id=None,
+                               domain="APTITUDE", category="Quantitative Aptitude", options=["10", str((i + 2) * 6), "30", "41"], correct_option_index=1))
+    elif stage_type == S.CODING:
+        for i in range(max(1, n - 1)):
+            qs.append(Question(question_text=f"{token} Coding problem {i}: read integers from stdin and print their sum.", question_type=QuestionType.CODING,
+                               skill_id=py.id, domain="CODING", starter_code="import sys\n",
+                               test_cases=[{"input": "[1, 2, 3]", "expected_output": "6"}, {"input": "[10, -4]", "expected_output": "6"}, {"input": "[0]", "expected_output": "0"}]))
+    else:
+        for i in range(n):
+            if i % 2 == 0:
+                qs.append(Question(question_text=f"{token} Technical MCQ {i}: which keyword defines a generator?", question_type=QuestionType.MCQ, skill_id=py.id,
+                                   options=["return", "yield", "emit"], correct_option_index=1))
+            else:
+                qs.append(Question(question_text=f"{token} Technical written {i}: explain Python's method resolution order.", question_type=QuestionType.TECHNICAL,
+                                   skill_id=py.id, expected_concepts=["C3", "mro"], rubric={"criteria": ["mro"]}))
+    for q in qs:
+        q.difficulty, q.source_type, q.organization_id = "medium", QuestionSourceType.COMPANY_PRIVATE, org.id
+        q.visibility, q.status = Visibility.COMPANY_PRIVATE, QuestionStatus.APPROVED
+        db.add(q)
+    a = Assessment(job_id=job.id, title=S.label(stage_type), status="PUBLISHED" if published else "DRAFT", stage_type=stage_type,
+                   total_duration_minutes=duration, config={"duration_minutes": duration, "randomize_questions": False, "randomize_options": False})
+    db.add(a)
+    await db.flush()
+    sec = AssessmentSection(assessment_id=a.id, title="all", order_index=0)
+    db.add(sec)
+    await db.flush()
+    aqs = []
+    for i, q in enumerate(qs):
+        aq = AssessmentQuestion(assessment_id=a.id, section_id=sec.id, question_id=q.id, order_index=i)
+        db.add(aq)
+        aqs.append(aq)
+    st.assessment_id, st.status = a.id, "PUBLISHED" if published else "READY"
+    await db.flush()
+    if published:
+        await ver.ensure_version(db, a)
+    return st, a, aqs, qs

@@ -42,9 +42,25 @@ def generate_assessment_task(self, job_id: str, title: str, actor_user_id: str |
 
 
 @celery_app.task(name="assessments.prepare_interview", bind=True, autoretry_for=TRANSIENT, retry_backoff=10, max_retries=2)
-def prepare_interview_template_task(self, job_id: str) -> dict:
-    """Authoring-time preparation of the interview template and question pool (docs/INTERVIEW_LATENCY.md)."""
+def prepare_interview_template_task(self, job_id: str, stage_type: str = "TECHNICAL_INTERVIEW") -> dict:
+    """Authoring-time preparation of an interview stage's template and question pool (docs/INTERVIEW_LATENCY.md)."""
     from app.services.interviews.pool import fill_pool
 
-    return run_async(lambda: run_tracked(f"interview_template:{job_id}", "interview_template", {"job_id": job_id}, self.request.id,
-                                         lambda: fill_pool(uuid.UUID(job_id))))
+    key = f"interview_template:{job_id}" + ("" if stage_type == "TECHNICAL_INTERVIEW" else f":{stage_type}")
+    return run_async(lambda: run_tracked(key, "interview_template", {"job_id": job_id, "stage_type": stage_type}, self.request.id,
+                                         lambda: fill_pool(uuid.UUID(job_id), stage_type)))
+
+
+@celery_app.task(name="pipeline.generate_stage", bind=True, autoretry_for=TRANSIENT, retry_backoff=10, max_retries=2)
+def generate_stage_task(self, job_id: str, stage_type: str, actor_user_id: str | None = None) -> dict:
+    """Builds one stage of a job's hiring process (aptitude / technical / coding assessment, or an interview template and pool)."""
+    from app.services.pipeline.stage_content import StageContentError, generate_stage
+
+    async def work():
+        try:
+            return await generate_stage(uuid.UUID(job_id), stage_type, uuid.UUID(actor_user_id) if actor_user_id else None)
+        except StageContentError as exc:
+            raise PermanentJobError(str(exc)) from exc
+
+    return run_async(lambda: run_tracked(f"stage:{job_id}:{stage_type}", "stage_generation", {"job_id": job_id, "stage_type": stage_type},
+                                         self.request.id, work))

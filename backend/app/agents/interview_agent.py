@@ -32,7 +32,9 @@ from app.schemas.interview import InterviewDecision
 from app.schemas.rubric import RubricEvaluation
 from app.services.ai_gateway.gateway import get_ai_gateway
 from app.services.ai_gateway.vector_store import TenantScope
+from app.services.interviews import depth
 from app.services.interviews.selector import SELECTION_WINDOW, Candidate, rank_candidates
+from app.services.pipeline import stages as S
 from app.services.knowledge.service import retrieve, to_source_refs
 
 
@@ -217,11 +219,93 @@ class _Q(BaseModel):
 
 
 async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool = True) -> InterviewTurn | None:
-    """Deterministic competency/difficulty selection, then the next question from the prepared pool (a DB lookup).
-    Only when the pool cannot serve does the slower live path (agent, then single call) run. Stage times are stored."""
-    from app.services.interviews.pool import select_from_pool
+    """Next turn for either interview stage. HR: category rotation over the HR pool. Technical: the frozen blueprint plus depth.plan_next choose
+    the competency and depth layer, the prepared pool supplies the wording (a database lookup). Only when no prepared question can serve does the
+    slower live path run (agent, then a single call)."""
+    if interview.stage_type == S.HR_INTERVIEW:
+        return await _decide_hr(db, interview)
+    from app.services.interviews.pool import pool_rows, _template
 
     t0 = time.perf_counter()
+    tpl = await _template(db, interview.job_id, S.TECH_INTERVIEW)
+    rows = await pool_rows(db, tpl.id) if tpl is not None else []
+    if tpl is not None and rows and (tpl.config or {}).get("blueprint"):
+        outcome = await _decide_depth(db, interview, tpl, rows, t0)
+        if outcome is not _MISS:
+            return outcome
+    return await _decide_live(db, interview, use_llm, t0)
+
+
+_MISS = object()
+
+
+async def _turn_states(db: AsyncSession, interview: Interview) -> tuple[list[InterviewTurn], list[depth.TurnState]]:
+    turns = list((await db.scalars(select(InterviewTurn).where(InterviewTurn.interview_id == interview.id).order_by(InterviewTurn.turn_index))).all())
+    states = []
+    for t in turns:
+        sc, cf = depth.turn_score(t.rubric_evaluation)
+        states.append(depth.TurnState(skill_id=str(t.target_skill_id), layer=t.layer or 2, score=sc, confidence=cf,
+                                      mode=(t.transcript_meta or {}).get("mode", "start")))
+    return turns, states
+
+
+async def _decide_depth(db: AsyncSession, interview: Interview, tpl, rows, t0: float):
+    from app.services.interviews.pool import _asked_texts
+
+    cfg = tpl.config
+    budget = min(interview.max_turns, cfg["question_budget"])
+    comps = depth.comps_from_blueprint(cfg["blueprint"], budget)
+    turns, states = await _turn_states(db, interview)
+    seen = await _asked_texts(db, interview)
+    exhausted: set[str] = set()
+    t1 = time.perf_counter()
+    while True:
+        pick = depth.plan_next(comps, states, budget, exhausted, int(cfg.get("max_asks_per_competency", depth.DEFAULT_MAX_ASKS)))
+        if pick is None:
+            # finished normally, unless the pool ran dry before the minimum was reached -> let the live path top up
+            return _MISS if (len(turns) < cfg.get("min_questions", 0) and len(turns) < budget) else None
+        kinds = [t.kind for t in turns if str(t.target_skill_id) == pick.skill_id and t.kind]
+        row = depth.choose_from_pool(rows, pick.skill_id, pick.layer, seen, kinds)
+        if row is None:
+            exhausted.add(pick.skill_id)
+            continue
+        turn = InterviewTurn(
+            interview_id=interview.id, turn_index=len(turns), target_skill_id=row.skill_id, question_text=row.question_text,
+            difficulty=row.difficulty, kind=row.kind, layer=row.layer, reason_for_question=pick.reason,
+            transcript_meta={"mode": pick.mode, **({"source_refs": row.source_refs} if row.source_refs else {})}, pool_question_id=row.id,
+            timing={"path": "pool", "pool_source": row.source, "mode": pick.mode, "plan_ms": round((time.perf_counter() - t1) * 1000, 1),
+                    "total_ms": round((time.perf_counter() - t0) * 1000, 1)})
+        db.add(turn)
+        await db.flush()
+        return turn
+
+
+async def _decide_hr(db: AsyncSession, interview: Interview) -> InterviewTurn | None:
+    from app.services.interviews.hr import pick_hr_question
+    from app.services.interviews.pool import _asked_texts, _template, pool_rows
+
+    t0 = time.perf_counter()
+    tpl = await _template(db, interview.job_id, S.HR_INTERVIEW)
+    if tpl is None:
+        return None
+    cfg = tpl.config
+    turns = list((await db.scalars(select(InterviewTurn).where(InterviewTurn.interview_id == interview.id).order_by(InterviewTurn.turn_index))).all())
+    if len(turns) >= min(interview.max_turns, cfg["question_budget"]):
+        return None
+    rows = await pool_rows(db, tpl.id)
+    row = pick_hr_question(rows, list(cfg["categories"]), [t.category for t in turns if t.category], await _asked_texts(db, interview))
+    if row is None:
+        return None
+    turn = InterviewTurn(interview_id=interview.id, turn_index=len(turns), target_skill_id=None, category=row.category, kind="behavioural",
+                         question_text=row.question_text, difficulty="medium", reason_for_question=f"HR topic: {row.category}",
+                         pool_question_id=row.id, timing={"path": "pool", "pool_source": row.source, "total_ms": round((time.perf_counter() - t0) * 1000, 1)})
+    db.add(turn)
+    await db.flush()
+    return turn
+
+
+async def _decide_live(db: AsyncSession, interview: Interview, use_llm: bool, t0: float) -> InterviewTurn | None:
+    """Controlled fallback: the ranked competency, asked live (agent, then a single call). Slower; labelled `live_fallback`."""
     job = await db.get(Job, interview.job_id)
     log = ToolLog()
     deps = InterviewDeps(db=db, interview=interview, job=job, log=log)
@@ -230,21 +314,7 @@ async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool
     rank_ms = (time.perf_counter() - t0) * 1000
     if not ranked or count >= interview.max_turns:
         return None
-
     t1 = time.perf_counter()
-    picked = await select_from_pool(db, interview, ranked, SELECTION_WINDOW)
-    if picked is not None:
-        pq, cand = picked
-        turn = InterviewTurn(
-            interview_id=interview.id, turn_index=count, target_skill_id=cand.skill_id, question_text=pq.question_text,
-            difficulty=pq.difficulty, reason_for_question=f"{pq.reason or 'prepared question'} [{cand.reason}]",
-            transcript_meta={"source_refs": pq.source_refs} if pq.source_refs else None, pool_question_id=pq.id,
-            timing={"path": "pool", "pool_source": pq.source, "rank_ms": round(rank_ms, 1),
-                    "select_ms": round((time.perf_counter() - t1) * 1000, 1), "total_ms": round((time.perf_counter() - t0) * 1000, 1)})
-        db.add(turn)
-        await db.flush()
-        return turn
-    pool_miss_ms = (time.perf_counter() - t1) * 1000
 
     async def llm() -> InterviewTurn:
         await run_llm_agent(interview_agent, "interview_agent", f"Choose the next question for the '{job.title}' interview.", deps, log)
@@ -273,13 +343,24 @@ async def decide_next_turn(db: AsyncSession, interview: Interview, use_llm: bool
         required_tools={"rank_competencies", "save_interview_turn"},
     )
     if turn is not None:
-        turn.timing = {"path": "live_fallback", "rank_ms": round(rank_ms, 1), "pool_miss_ms": round(pool_miss_ms, 1),
+        turn.timing = {"path": "live_fallback", "rank_ms": round(rank_ms, 1), "pool_miss_ms": round((time.perf_counter() - t1) * 1000, 1),
                        "total_ms": round((time.perf_counter() - t0) * 1000, 1)}
     return turn
 
 
 async def _disabled():
     raise RuntimeError("LLM orchestration disabled for this call")
+
+
+async def evaluate_hr_answer(turn: InterviewTurn) -> dict:
+    """Neutral, job-relevant observations for a human reviewer. Never a score, never evidence, never a recommendation."""
+    from app.services.interviews.hr import HR_SYSTEM, HRObservation, sanitize
+
+    obs = await get_ai_gateway().generate_structured(
+        f"TOPIC: {turn.category}\nQUESTION: {turn.question_text}\n\nCANDIDATE ANSWER:\n{(turn.student_answer_text or '')[:4000]}",
+        HRObservation, system=HR_SYSTEM, temperature=0.0, task_type="hr_observation", related_entity_type="interview_turn",
+        related_entity_id=turn.id)
+    return sanitize(obs)
 
 
 async def evaluate_turn_answer(turn: InterviewTurn) -> RubricEvaluation:

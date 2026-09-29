@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class StartInterviewRequest(BaseModel):
     application_id: uuid.UUID
+    stage_type: str = "TECHNICAL_INTERVIEW"  # TECHNICAL_INTERVIEW | HR_INTERVIEW
 
 
 class InterviewOut(BaseModel):
@@ -13,6 +14,7 @@ class InterviewOut(BaseModel):
     job_id: uuid.UUID
     status: str
     max_turns: int | None = None
+    stage_type: str = "TECHNICAL_INTERVIEW"
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -20,7 +22,10 @@ class InterviewOut(BaseModel):
 class InterviewTurnOut(BaseModel):
     id: uuid.UUID
     turn_index: int
-    target_skill_id: uuid.UUID
+    target_skill_id: uuid.UUID | None = None
+    category: str | None = None
+    kind: str | None = None
+    layer: int | None = None
     skill_name: str | None = None
     question_text: str
     difficulty: str

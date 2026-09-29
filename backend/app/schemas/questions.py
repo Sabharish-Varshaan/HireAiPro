@@ -10,7 +10,10 @@ from app.models.enums import QuestionSourceType, QuestionStatus, QuestionType, V
 class QuestionCreate(BaseModel):
     question_text: str
     question_type: QuestionType
-    skill_id: uuid.UUID
+    skill_id: uuid.UUID | None = None  # required except for APTITUDE and HR_INTERVIEW questions
+    domain: str = "TECHNICAL"
+    category: str | None = None
+    sub_category: str | None = None
     difficulty: str = "medium"
     options: list[str] | None = None
     correct_option_index: int | None = None
@@ -28,7 +31,10 @@ class QuestionOut(BaseModel):
     id: uuid.UUID
     question_text: str
     question_type: QuestionType
-    skill_id: uuid.UUID
+    skill_id: uuid.UUID | None = None
+    domain: str = "TECHNICAL"
+    category: str | None = None
+    sub_category: str | None = None
     difficulty: str
     options: list | None
     expected_concepts: list[str] | None
@@ -56,7 +62,8 @@ class QuestionStudentOut(BaseModel):
     id: uuid.UUID
     question_text: str
     question_type: QuestionType
-    skill_id: uuid.UUID
+    skill_id: uuid.UUID | None = None
+    category: str | None = None
     difficulty: str
     options: list | None
     starter_code: str | None
